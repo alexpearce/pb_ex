@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package validate_any_invalid;
+
+import "buf/validate/validate.proto";
+
+message WrongAnyRules {
+  string value = 1 [(buf.validate.field).any = {
+    in: ["type.googleapis.com/google.protobuf.Duration"]
+  }];
+}

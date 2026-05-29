@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package validate_structural_oneof_zero_invalid;
+
+import "buf/validate/validate.proto";
+
+message MessageOneofZeroFields {
+  option (buf.validate.message).oneof = {
+    required: true
+  };
+
+  string value = 1;
+}

@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package protovalidate_probe;
+
+import "buf/validate/validate.proto";
+
+message Probe {
+  string value = 1 [(buf.validate.field).string.min_len = 3];
+}

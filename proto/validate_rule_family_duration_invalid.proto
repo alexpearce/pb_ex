@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package validate_rule_family_duration_invalid;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/wrappers.proto";
+
+message WrongDurationRules {
+  google.protobuf.Int32Value value = 1 [(buf.validate.field).duration.example = {
+    seconds: 3
+  }];
+}

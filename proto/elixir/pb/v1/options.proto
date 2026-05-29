@@ -1,0 +1,51 @@
+syntax = "proto2";
+
+package elixir.pb.v1;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MessageOptions {
+  optional Message message = 51000;
+}
+
+extend google.protobuf.OneofOptions {
+  optional Oneof oneof = 51001;
+}
+
+message Message {
+  optional string struct = 1;
+  optional Unwrap unwrap = 2;
+  optional UnknownFields preserved_unknown_fields = 3;
+  optional ExtensionFields extensions = 4;
+}
+
+message Unwrap {
+  oneof target {
+    bool only_field = 1;
+    string field = 2;
+  }
+}
+
+message UnknownFields {
+  oneof policy {
+    bool drop = 1;
+    bool reject = 2;
+    string field = 3;
+  }
+}
+
+message ExtensionFields {
+  oneof policy {
+    bool reject = 1;
+    string field = 2;
+  }
+}
+
+message Oneof {
+  enum Representation {
+    REPRESENTATION_UNSPECIFIED = 0;
+    IDENTITY = 1;
+  }
+
+  optional Representation representation = 1;
+}

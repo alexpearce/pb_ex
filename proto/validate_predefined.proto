@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package validate_predefined;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/any.proto";
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK = 1;
+}
+
+message StringRules {
+  string email = 1 [(buf.validate.field).string.email = true];
+
+  string min_len = 2 [(buf.validate.field).string.min_len = 3];
+
+  string const = 3 [(buf.validate.field).string.const = "foo"];
+
+  string header_name = 4 [(buf.validate.field).string.well_known_regex = KNOWN_REGEX_HTTP_HEADER_NAME];
+}
+
+message NestedRules {
+  repeated string names = 1 [(buf.validate.field).repeated.items.string.min_len = 3];
+
+  map<string, string> labels = 2 [
+    (buf.validate.field).map.keys.string.min_len = 2,
+    (buf.validate.field).map.values.string.pattern = "^[a-z]+$"
+  ];
+
+  repeated Item ignored_items = 3 [(buf.validate.field).repeated.items.ignore = IGNORE_ALWAYS];
+
+  repeated google.protobuf.Any any_values = 4 [(buf.validate.field).repeated.items.any = {
+    in: ["type.googleapis.com/google.protobuf.Duration"]
+  }];
+
+  message Item {
+    int64 count = 1 [(buf.validate.field).int64.gt = 0];
+  }
+}
+
+message AnyRules {
+  google.protobuf.Any allowed = 1 [(buf.validate.field).any = {
+    in: ["type.googleapis.com/google.protobuf.Duration"]
+  }];
+
+  google.protobuf.Any blocked = 2 [(buf.validate.field).any = {
+    not_in: ["type.googleapis.com/google.protobuf.Timestamp"]
+  }];
+}
+
+message EnumRules {
+  Status status = 1 [(buf.validate.field).enum.defined_only = true];
+
+  repeated Status statuses = 2 [(buf.validate.field).repeated.items.enum.defined_only = true];
+}

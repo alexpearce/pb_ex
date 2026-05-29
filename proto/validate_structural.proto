@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package validate_structural;
+
+import "buf/validate/validate.proto";
+
+message StructuralRules {
+  optional string required_value = 1 [(buf.validate.field).required = true];
+
+  string ignored_always = 2 [(buf.validate.field).ignore = IGNORE_ALWAYS];
+
+  string ignored_zero = 3 [(buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE];
+
+  optional string ignored_required = 6 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).ignore = IGNORE_ALWAYS
+  ];
+
+  string ignored_zero_cel = 7 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).cel = {
+      id: "ignored_zero_cel"
+      message: "must be non-empty"
+      expression: "this.size() > 0"
+    }
+  ];
+
+  oneof choice {
+    option (buf.validate.oneof).required = true;
+
+    string name = 4;
+    int32 id = 5;
+  }
+}
+
+message MessageOneofRules {
+  option (buf.validate.message).oneof = {
+    fields: ["left", "right"]
+    required: true
+  };
+
+  string left = 1;
+  string right = 2 [(buf.validate.field).cel = {
+    id: "right_non_empty"
+    message: "right must be non-empty"
+    expression: "this.size() > 0"
+  }];
+}

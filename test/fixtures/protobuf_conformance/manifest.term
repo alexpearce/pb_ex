@@ -1,0 +1,12 @@
+%{
+  package: "protobuf-conformance",
+  version: "34.1.0",
+  fixtures: [
+    %{path: "proto/conformance/conformance.proto", sha256: "fcaaa02762df620e242f9141276b16b43428dcfb01cc8f4c65832ac29505d571"},
+    %{path: "proto/google/protobuf/test_messages_edition2023.proto", sha256: "57fbb6671446b8e27d4d53550c2b4eae174df20c1fdfe2a4db94ed891856f73a"},
+    %{path: "proto/google/protobuf/test_messages_proto2.proto", sha256: "ecb9d7537610d5594d136d8c32c00ee8038a2494aa1721c683da6add8957daab"},
+    %{path: "proto/google/protobuf/test_messages_proto2_editions.proto", sha256: "42cf9165ae361d503929b57168d8504cee71ec4d682545c4d72975e6ea65fbf0"},
+    %{path: "proto/google/protobuf/test_messages_proto3.proto", sha256: "c3c6fd3959fe767f00c19bcb79e71bc4ca2b51769b7f49a14b24e9b24e152873"},
+    %{path: "proto/google/protobuf/test_messages_proto3_editions.proto", sha256: "87df6c6f4871967a9ee25148dc6ab0a66c816ae3a372558ed6858b6b8ee9cce6"},
+  ]
+}

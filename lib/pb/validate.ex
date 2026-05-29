@@ -1,0 +1,999 @@
+defmodule PB.Validate do
+  @moduledoc """
+  Runtime protovalidate validation.
+
+  Validation accepts the same public message term shape as `PB.encode/4`.
+  Canonical maps, represented structs, identity oneofs, unwrapped messages, and
+  adapted values are projected one message layer at a time before field rules,
+  message rules, and CEL expressions read protobuf fields.
+
+  Validation rule failures return `{:error, %PB.Validate.Error{}}`.
+  Unknown validation messages, message-name metadata mismatches, non-map
+  validation input, and projection failures raise a `PB.Error` struct
+  (`PB.SchemaError` or `PB.ValueError`) with `operation: :validate`; a CEL
+  constraint that fails at runtime raises `PB.CEL.Error`. Those are
+  caller-contract / evaluation errors rather than protovalidate violations.
+
+  Schemas may be supplied either as a compiled schema map or as a module that
+  `use PB.Schema`.
+  """
+
+  alias PB.CEL.Evaluator
+  alias PB.CEL.Schema.Field
+  alias PB.Validate.CEL.FieldReader
+  alias PB.Validate.CEL.MessageRuntime, as: CELMessage
+  alias PB.Validate.CEL.MessageSchema, as: CELSchema
+  alias PB.Runtime.MessageView
+  alias PB.Runtime.Scalar
+  alias PB.Schema.Features
+  alias PB.Validate.Context
+  alias PB.Validate.Error
+  alias PB.Validate.Schema, as: ValidateSchema
+  alias PB.Validate.Schema.RuleSet
+  alias PB.Validate.Violation
+
+  require Field
+
+  @message_name_key :__message_name__
+
+  @type result :: :ok | {:error, Error.t()}
+  @typep message_context :: %{
+           required(:schema) => PB.schema(),
+           required(:message_name) => PB.message_name(),
+           required(:message) => PB.Schema.Compiled.message(),
+           required(:data) => map(),
+           required(:path) => [PB.Error.path_element()],
+           required(:runtime) => Context.t(),
+           required(:fields) => %{
+             optional(atom()) => %{
+               required(:present?) => boolean(),
+               required(:zero?) => boolean(),
+               required(:message_oneof_set?) => boolean()
+             }
+           }
+         }
+
+  @spec validate(term(), PB.schema_source(), PB.message_name(), keyword) ::
+          result
+  def validate(data, schema, message_name, opts \\ [])
+      when is_atom(message_name) and is_list(opts) do
+    schema = PB.__compiled__(schema)
+    context = Context.from_options(opts)
+
+    schema
+    |> collect_violations(message_name, data, context)
+    |> result()
+  end
+
+  @spec validate!(term(), PB.schema_source(), PB.message_name(), keyword) ::
+          :ok
+  def validate!(data, schema, message_name, opts \\ [])
+      when is_atom(message_name) and is_list(opts) do
+    case validate(data, schema, message_name, opts) do
+      :ok -> :ok
+      {:error, %Error{} = error} -> raise error
+    end
+  end
+
+  @spec to_proto_violations(result | Error.t() | [Violation.t() | map]) :: %{
+          required(:violations) => [map()]
+        }
+  def to_proto_violations(:ok), do: %{violations: []}
+  def to_proto_violations({:error, %Error{} = error}), do: to_proto_violations(error)
+
+  def to_proto_violations(%Error{violations: violations}) do
+    to_proto_violations(violations)
+  end
+
+  def to_proto_violations(violations) when is_list(violations) do
+    %{violations: Enum.map(violations, &Violation.to_proto/1)}
+  end
+
+  defp collect_violations(schema, message_name, data, context) do
+    case Map.fetch(schema.messages, message_name) do
+      {:ok, %{kind: :message} = message} ->
+        data = project_message!(schema, message_name, message, data, [])
+        {message_name, validate_message(schema, message_name, message, data, [], context)}
+
+      {:ok, _message} ->
+        {message_name, []}
+
+      :error ->
+        raise PB.SchemaError,
+          operation: :validate,
+          message_name: message_name,
+          kind: :unknown_message,
+          name: message_name
+    end
+  end
+
+  defp result({_message_name, []}), do: :ok
+
+  defp result({message_name, violations}),
+    do: {:error, %Error{message_name: message_name, violations: violations}}
+
+  defp project_message!(schema, message_name, message, data, path) do
+    case MessageView.to_proto_fields(schema, message_name, message, data, path) do
+      {:ok, data} ->
+        data
+
+      {:error, reason} ->
+        raise PB.ValueError,
+          operation: :validate,
+          message_name: message_name,
+          kind: :invalid_value,
+          path: path,
+          expected: :map,
+          got: data,
+          reason: reason
+    end
+  end
+
+  defp validate_message(schema, message_name, message, data, path, context)
+       when is_map(data) and not is_struct(data) do
+    validate_message_name!(data, message_name, path)
+
+    if get_in(message, [:validate, :disabled]) == true do
+      []
+    else
+      ctx = message_context(schema, message_name, message, data, path, context)
+
+      field_violations =
+        message
+        |> sorted_fields()
+        |> Enum.flat_map(fn field ->
+          validate_field(ctx, field)
+        end)
+
+      oneof_violations =
+        message
+        |> sorted_oneofs()
+        |> Enum.flat_map(fn oneof -> validate_oneof(ctx, oneof) end)
+
+      message_oneof_violations = validate_message_oneofs(ctx)
+      cel_violations = validate_message_cel(ctx)
+
+      field_violations ++ oneof_violations ++ message_oneof_violations ++ cel_violations
+    end
+  end
+
+  defp validate_message(
+         _schema,
+         _message_name,
+         %{validate: %{disabled: true}},
+         _data,
+         _path,
+         _context
+       ),
+       do: []
+
+  defp validate_message(_schema, message_name, _message, data, path, _context) do
+    raise PB.ValueError,
+      operation: :validate,
+      message_name: message_name,
+      kind: :invalid_value,
+      path: path,
+      expected: :map,
+      got: data,
+      reason: "expected a message map"
+  end
+
+  defp validate_message_name!(%{@message_name_key => expected}, expected, _path), do: :ok
+
+  defp validate_message_name!(%{@message_name_key => actual}, expected, path) do
+    raise PB.ValueError,
+      operation: :validate,
+      message_name: expected,
+      kind: :message_name_mismatch,
+      path: path ++ [@message_name_key],
+      expected: expected,
+      got: actual
+  end
+
+  defp validate_message_name!(_data, _expected, _path), do: :ok
+
+  @spec message_context(
+          PB.schema(),
+          PB.message_name(),
+          PB.Schema.Compiled.message(),
+          map(),
+          [PB.Error.path_element()],
+          Context.t()
+        ) ::
+          message_context()
+  defp message_context(schema, message_name, message, data, path, runtime_context) do
+    ctx = %{
+      schema: schema,
+      message_name: message_name,
+      message: message,
+      data: data,
+      path: path,
+      runtime: runtime_context
+    }
+
+    Map.put(ctx, :fields, field_states(ctx))
+  end
+
+  defp field_states(ctx) do
+    ctx.message
+    |> sorted_fields()
+    |> Map.new(fn field ->
+      present? = FieldReader.present?(ctx.schema, ctx.message, ctx.data, field.name, field)
+      zero? = zero_value?(ctx.schema, ctx.message, ctx.data, field, present?)
+
+      message_oneof_set? =
+        if Features.has_presence?(field) do
+          present?
+        else
+          present? and not zero?
+        end
+
+      {field.name, %{present?: present?, zero?: zero?, message_oneof_set?: message_oneof_set?}}
+    end)
+  end
+
+  defp field_state(ctx, field), do: Map.fetch!(ctx.fields, field.name)
+
+  defp validate_field(ctx, field) do
+    validate = Map.get(field, :validate, %{})
+
+    cond do
+      validate[:ignore] == :IGNORE_ALWAYS ->
+        []
+
+      required_missing?(ctx, field) ->
+        [
+          violation(
+            "required",
+            field_path(ctx.path, field),
+            ValidateSchema.field_required_rule_path()
+          )
+        ]
+
+      unset_message_oneof_field?(ctx, field) ->
+        []
+
+      skip_unset_explicit_field?(ctx, field) ->
+        []
+
+      ignore_zero_field?(ctx, field) ->
+        []
+
+      true ->
+        validate_field_native(ctx, field) ++
+          validate_field_cel(ctx, field) ++
+          validate_repeated_items(ctx, field) ++
+          validate_map_entries(ctx, field) ++
+          validate_nested_field(ctx, field)
+    end
+  end
+
+  defp validate_field_native(ctx, field) do
+    ops = get_in(field, [:validate, :native]) || []
+
+    if ops == [] do
+      []
+    else
+      case FieldReader.fetch(ctx.schema, ctx.message, ctx.data, field.name, field) do
+        {:ok, raw_value} -> validate_native_ops(ops, raw_value, field_path(ctx.path, field), nil)
+        :error -> []
+      end
+    end
+  end
+
+  defp validate_field_cel(ctx, field) do
+    ops = get_in(field, [:validate, :cel]) || []
+
+    if ops == [] do
+      []
+    else
+      {:ok, value} = FieldReader.read(ctx.schema, ctx.message, ctx.data, field.name, field)
+
+      ops
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {op, index} ->
+        validate_cel_op(
+          ctx.schema,
+          op,
+          value,
+          field_path(ctx.path, field),
+          ValidateSchema.field_cel_rule_path(index),
+          ctx.runtime
+        )
+      end)
+    end
+  end
+
+  defp validate_message_cel(ctx) do
+    ops = get_in(ctx.schema.messages[ctx.message_name], [:validate, :cel]) || []
+
+    if ops == [] do
+      []
+    else
+      {:ok, value} = CELMessage.from_decoded(ctx.schema, ctx.message_name, ctx.data)
+      violation_path = if ctx.path == [], do: nil, else: field_path(ctx.path)
+
+      ops
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {op, index} ->
+        validate_cel_op(
+          ctx.schema,
+          op,
+          value,
+          violation_path,
+          ValidateSchema.message_cel_rule_path(index),
+          ctx.runtime,
+          proto_rule: nil
+        )
+      end)
+    end
+  end
+
+  defp validate_repeated_items(ctx, field) do
+    case {repeated_item_rules(field), Map.fetch(ctx.data, field.name)} do
+      {%RuleSet{} = rules, {:ok, values}} when is_list(values) ->
+        item_field = repeated_item_field(field)
+
+        values
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {value, index} ->
+          validate_rule_set(
+            ctx.schema,
+            rules,
+            item_field,
+            value,
+            field_path(ctx.path ++ [path_element(field, {:index, index})]),
+            ctx.runtime
+          )
+        end)
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_map_entries(ctx, %{cardinality: :map} = field) do
+    case Map.fetch(ctx.data, field.name) do
+      {:ok, values} when is_map(values) ->
+        validate_map_keys(ctx, field, values) ++ validate_map_values(ctx, field, values)
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_map_entries(_ctx, _field), do: []
+
+  defp validate_map_keys(ctx, field, values) do
+    case map_key_rules(field) do
+      %RuleSet{} = rules ->
+        Enum.flat_map(values, fn {key, _value} ->
+          validate_rule_set(
+            ctx.schema,
+            rules,
+            field.map_key,
+            key,
+            field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
+            ctx.runtime,
+            for_key: true
+          )
+        end)
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_map_values(ctx, field, values) do
+    case map_value_rules(field) do
+      %RuleSet{} = rules ->
+        Enum.flat_map(values, fn {key, value} ->
+          validate_rule_set(
+            ctx.schema,
+            rules,
+            field.map_value,
+            value,
+            field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
+            ctx.runtime
+          )
+        end)
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_rule_set(
+         schema,
+         %RuleSet{} = rules,
+         field,
+         raw_value,
+         field_path,
+         context,
+         opts \\ []
+       ) do
+    cond do
+      rules.ignore == :IGNORE_ALWAYS ->
+        []
+
+      rules.ignore == :IGNORE_IF_ZERO_VALUE and raw_zero_value?(schema, field, raw_value) ->
+        []
+
+      true ->
+        for_key = Keyword.get(opts, :for_key)
+
+        validate_native_ops(rules.native, raw_value, field_path, for_key) ++
+          validate_rule_set_cel(schema, rules, field, raw_value, field_path, context, for_key)
+    end
+  end
+
+  defp validate_rule_set_cel(
+         _schema,
+         %RuleSet{cel: []},
+         _field,
+         _raw_value,
+         _field_path,
+         _context,
+         _for_key
+       ),
+       do: []
+
+  defp validate_rule_set_cel(
+         schema,
+         %RuleSet{} = rules,
+         field,
+         raw_value,
+         field_path,
+         context,
+         for_key
+       ) do
+    {:ok, value} = CELMessage.field_value(schema, field, raw_value)
+
+    rules.cel
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {op, index} ->
+      validate_cel_op(
+        schema,
+        op,
+        value,
+        field_path,
+        ValidateSchema.field_cel_rule_path(index),
+        context,
+        for_key: for_key
+      )
+    end)
+  end
+
+  defp validate_cel_op(schema, op, value, field_path, fallback_rule_path, context, opts \\ []) do
+    rule_path = Map.get(op, :rule_path) || fallback_rule_path
+    proto_rule = Keyword.get(opts, :proto_rule, op_proto_rule_path(op, rule_path))
+    for_key = Keyword.get(opts, :for_key)
+    eval_schema = op_eval_schema(schema, op)
+    vars = op_vars(op, value, context)
+
+    case Evaluator.eval(op.checked, vars,
+           schema: eval_schema,
+           message_schema: CELSchema,
+           message_runtime: CELMessage
+         ) do
+      {:ok, {:bool, true}} ->
+        []
+
+      {:ok, {:bool, false}} ->
+        [cel_violation(op, field_path, rule_path, proto_rule, blank_to_nil(op.message), for_key)]
+
+      {:ok, {:string, ""}} ->
+        []
+
+      {:ok, {:string, message}} ->
+        [
+          cel_violation(
+            op,
+            field_path,
+            rule_path,
+            proto_rule,
+            blank_to_nil(op.message) || message,
+            for_key
+          )
+        ]
+
+      {:ok, other} ->
+        raise PB.CEL.Error,
+          phase: :eval,
+          message: "validation rule #{inspect(op.id)} returned non-boolean #{inspect(other)}"
+
+      {:error, error} ->
+        raise error
+    end
+  end
+
+  defp validate_native_ops([], _raw_value, _field_path, _for_key), do: []
+
+  defp validate_native_ops(ops, raw_value, field_path, for_key) do
+    Enum.flat_map(ops, fn op ->
+      if native_op_valid?(op, raw_value) do
+        []
+      else
+        [native_violation(op, field_path, for_key)]
+      end
+    end)
+  end
+
+  defp native_op_valid?(%{kind: :any_in, values: values}, raw_value) do
+    any_type_url(raw_value) in values
+  end
+
+  defp native_op_valid?(%{kind: :any_not_in, values: values}, raw_value) do
+    any_type_url(raw_value) not in values
+  end
+
+  defp native_op_valid?(%{kind: :enum_defined_only, values: values}, raw_value) do
+    raw_value in values
+  end
+
+  defp native_op_valid?(%{kind: kind}, _raw_value) do
+    raise PB.SchemaError,
+      kind: :invalid_schema,
+      type_name: kind,
+      reason: :unknown_native_validation_op
+  end
+
+  defp any_type_url(%{type_url: type_url}) when is_binary(type_url), do: type_url
+  defp any_type_url(%{"type_url" => type_url}) when is_binary(type_url), do: type_url
+  defp any_type_url({:object, type_url, _value}) when is_binary(type_url), do: type_url
+
+  defp any_type_url({:message, :"google.protobuf.Any", fields}) when is_map(fields) do
+    any_type_url(fields)
+  end
+
+  defp any_type_url(fields) when is_map(fields), do: Map.get(fields, :type_url, "")
+  defp any_type_url(_raw_value), do: ""
+
+  defp op_vars(op, value, context) do
+    context
+    |> Context.vars()
+    |> Map.merge(Map.get(op, :vars, %{}))
+    |> Map.put("this", value)
+  end
+
+  defp op_eval_schema(schema, op) do
+    if map_size(Map.get(op, :vars, %{})) == 0 do
+      schema
+    else
+      ValidateSchema.standard_rule_schema(schema)
+    end
+  end
+
+  defp op_proto_rule_path(op, default) do
+    if Map.has_key?(op, :proto_rule_path) do
+      Map.get(op, :proto_rule_path)
+    else
+      default
+    end
+  end
+
+  defp validate_nested_field(ctx, %{type: type} = field)
+       when Field.message_type?(type) do
+    cond do
+      field.cardinality == :map ->
+        validate_nested_map_values(ctx, field)
+
+      field.cardinality == :repeated ->
+        validate_nested_repeated_messages(ctx, field)
+
+      true ->
+        validate_nested_singular_message(ctx, field)
+    end
+  end
+
+  defp validate_nested_field(_ctx, _field), do: []
+
+  defp validate_nested_singular_message(ctx, field) do
+    case FieldReader.fetch(ctx.schema, ctx.message, ctx.data, field.name, field) do
+      {:ok, nil} ->
+        []
+
+      {:ok, value} ->
+        case fetch_message(ctx.schema, field.type_name) do
+          {:ok, nested} ->
+            item_path = ctx.path ++ [path_element(field)]
+
+            value =
+              project_message!(
+                ctx.schema,
+                field.type_name,
+                nested,
+                value,
+                item_path
+              )
+
+            validate_message(
+              ctx.schema,
+              field.type_name,
+              nested,
+              value,
+              item_path,
+              ctx.runtime
+            )
+
+          :error ->
+            []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_nested_repeated_messages(ctx, field) do
+    case Map.fetch(ctx.data, field.name) do
+      {:ok, values} when is_list(values) ->
+        case fetch_message(ctx.schema, field.type_name) do
+          {:ok, nested} ->
+            item_rules = repeated_item_rules(field)
+            item_field = repeated_item_field(field)
+
+            values
+            |> Enum.with_index()
+            |> Enum.flat_map(fn
+              {nil, _index} ->
+                []
+
+              {value, index} ->
+                if nested_rule_set_ignored?(ctx.schema, item_rules, item_field, value) do
+                  []
+                else
+                  item_path = ctx.path ++ [path_element(field, {:index, index})]
+
+                  value =
+                    project_message!(
+                      ctx.schema,
+                      field.type_name,
+                      nested,
+                      value,
+                      item_path
+                    )
+
+                  validate_message(
+                    ctx.schema,
+                    field.type_name,
+                    nested,
+                    value,
+                    item_path,
+                    ctx.runtime
+                  )
+                end
+            end)
+
+          :error ->
+            []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_nested_map_values(
+         ctx,
+         %{map_value: %{type: type} = value_field} = field
+       )
+       when Field.message_type?(type) do
+    case Map.fetch(ctx.data, field.name) do
+      {:ok, values} when is_map(values) ->
+        case fetch_message(ctx.schema, value_field.type_name) do
+          {:ok, nested} ->
+            value_rules = map_value_rules(field)
+
+            Enum.flat_map(values, fn
+              {_key, nil} ->
+                []
+
+              {key, value} ->
+                if nested_rule_set_ignored?(ctx.schema, value_rules, value_field, value) do
+                  []
+                else
+                  item_path = ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]
+
+                  value =
+                    project_message!(
+                      ctx.schema,
+                      value_field.type_name,
+                      nested,
+                      value,
+                      item_path
+                    )
+
+                  validate_message(
+                    ctx.schema,
+                    value_field.type_name,
+                    nested,
+                    value,
+                    item_path,
+                    ctx.runtime
+                  )
+                end
+            end)
+
+          :error ->
+            []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp validate_nested_map_values(_ctx, _field), do: []
+
+  defp nested_rule_set_ignored?(_schema, %RuleSet{ignore: :IGNORE_ALWAYS}, _field, _value),
+    do: true
+
+  defp nested_rule_set_ignored?(schema, %RuleSet{ignore: :IGNORE_IF_ZERO_VALUE}, field, value),
+    do: raw_zero_value?(schema, field, value)
+
+  defp nested_rule_set_ignored?(_schema, _rules, _field, _value), do: false
+
+  defp repeated_item_field(field), do: Map.put(field, :cardinality, :singular)
+
+  defp repeated_item_rules(%{validate: %{repeated: %{items: items}}}), do: items
+  defp repeated_item_rules(_field), do: nil
+
+  defp map_key_rules(%{validate: %{map: %{keys: keys}}}), do: keys
+  defp map_key_rules(_field), do: nil
+
+  defp map_value_rules(%{validate: %{map: %{values: values}}}), do: values
+  defp map_value_rules(_field), do: nil
+
+  defp raw_zero_value?(_schema, %{type: type}, value) when Field.message_type?(type) do
+    value in [nil, %{}]
+  end
+
+  defp raw_zero_value?(_schema, field, value) do
+    with {:ok, value} <- Scalar.normalize_encode_value(field, value, []),
+         :ok <- Scalar.validate_encode(field, value, []) do
+      Scalar.default_value?(field, value)
+    else
+      _error -> false
+    end
+  end
+
+  defp fetch_message(schema, message_name) do
+    case Map.fetch(schema.messages, message_name) do
+      {:ok, %{kind: :message} = message} -> {:ok, message}
+      _other -> :error
+    end
+  end
+
+  defp validate_oneof(ctx, oneof) do
+    if get_in(oneof, [:validate, :required]) == true and not Map.has_key?(ctx.data, oneof.name) do
+      [violation("required", field_path(ctx.path ++ [oneof_path_element(oneof)]), nil)]
+    else
+      []
+    end
+  end
+
+  defp validate_message_oneofs(ctx) do
+    message_oneofs = get_in(ctx.message, [:validate, :message_oneofs]) || []
+
+    Enum.flat_map(message_oneofs, fn oneof ->
+      present =
+        Enum.filter(oneof.fields, fn name ->
+          field = Map.fetch!(ctx.message.fields_by_name, name)
+          field_state(ctx, field).message_oneof_set?
+        end)
+
+      cond do
+        length(present) > 1 ->
+          [
+            violation(
+              "message.oneof",
+              nil,
+              nil,
+              "only one of #{message_oneof_fields(oneof.fields)} can be set"
+            )
+          ]
+
+        oneof.required and present == [] ->
+          [
+            violation(
+              "message.oneof",
+              nil,
+              nil,
+              "one of #{message_oneof_fields(oneof.fields)} must be set"
+            )
+          ]
+
+        true ->
+          []
+      end
+    end)
+  end
+
+  defp unset_message_oneof_field?(ctx, field) do
+    ctx.message
+    |> get_in([:validate, :message_oneofs])
+    |> List.wrap()
+    |> Enum.any?(fn oneof ->
+      field.name in oneof.fields and
+        not field_state(ctx, field).message_oneof_set?
+    end)
+  end
+
+  defp required_missing?(ctx, field) do
+    if get_in(field, [:validate, :required]) == true do
+      state = field_state(ctx, field)
+
+      if Features.has_presence?(field) do
+        not state.present?
+      else
+        state.zero?
+      end
+    else
+      false
+    end
+  end
+
+  defp skip_unset_explicit_field?(ctx, field) do
+    Features.has_presence?(field) and not field_state(ctx, field).present?
+  end
+
+  defp ignore_zero_field?(ctx, field) do
+    get_in(field, [:validate, :ignore]) == :IGNORE_IF_ZERO_VALUE and
+      get_in(field, [:validate, :required]) != true and
+      not Features.has_presence?(field) and
+      field_state(ctx, field).zero?
+  end
+
+  defp zero_value?(_schema, _message, _data, %{cardinality: :repeated}, false), do: true
+  defp zero_value?(_schema, _message, _data, %{cardinality: :map}, false), do: true
+
+  defp zero_value?(_schema, _message, data, %{cardinality: :repeated} = field, _present?) do
+    case Map.fetch(data, field.name) do
+      {:ok, values} when is_list(values) -> values == []
+      :error -> true
+      _other -> false
+    end
+  end
+
+  defp zero_value?(_schema, _message, data, %{cardinality: :map} = field, _present?) do
+    case Map.fetch(data, field.name) do
+      {:ok, values} when is_map(values) -> map_size(values) == 0
+      :error -> true
+      _other -> false
+    end
+  end
+
+  defp zero_value?(_schema, _message, data, %{type: type} = field, present?)
+       when Field.message_type?(type) do
+    if present? do
+      Map.get(data, field.name) in [nil, %{}]
+    else
+      true
+    end
+  end
+
+  defp zero_value?(_schema, _message, data, field, present?) do
+    value =
+      if present? do
+        Map.get(data, field.name)
+      else
+        nil
+      end
+
+    with {:ok, value} <- Scalar.normalize_encode_value(field, value, []),
+         :ok <- Scalar.validate_encode(field, value, []) do
+      Scalar.default_value?(field, value)
+    else
+      _error -> false
+    end
+  end
+
+  defp sorted_fields(message) do
+    message.fields_by_name
+    |> Map.values()
+    |> Enum.sort_by(& &1.number)
+  end
+
+  defp sorted_oneofs(message) do
+    message.oneofs
+    |> Enum.sort_by(fn {index, _oneof} -> index end)
+    |> Enum.map(fn {_index, oneof} -> oneof end)
+  end
+
+  defp violation(rule_id, field_path, rule_path, message \\ nil) do
+    %Violation{
+      rule_id: rule_id,
+      field: field_path,
+      rule: rule_path,
+      proto_rule: rule_path,
+      message: message
+    }
+  end
+
+  defp cel_violation(op, field_path, rule_path, proto_rule, message, for_key) do
+    %Violation{
+      rule_id: op.id,
+      field: field_path,
+      rule: rule_path,
+      proto_rule: proto_rule,
+      message: message,
+      source: op.source,
+      for_key: for_key
+    }
+  end
+
+  defp native_violation(op, field_path, for_key) do
+    %Violation{
+      rule_id: op.id,
+      field: field_path,
+      rule: op.rule_path,
+      proto_rule: op.proto_rule_path,
+      message: op.message,
+      for_key: for_key
+    }
+  end
+
+  defp field_path(nil), do: nil
+  defp field_path([]), do: nil
+  defp field_path(elements), do: %{elements: elements}
+  defp field_path(path, field), do: field_path(path ++ [path_element(field)])
+
+  defp path_element(field, subscript \\ nil) do
+    %{
+      field_number: field.number,
+      field_name: Atom.to_string(field.name),
+      field_type: path_field_type(field)
+    }
+    |> maybe_put(:key_type, map_key_type(field))
+    |> maybe_put(:value_type, map_value_type(field))
+    |> maybe_put(:subscript, subscript)
+  end
+
+  defp oneof_path_element(oneof), do: %{field_name: Atom.to_string(oneof.name)}
+
+  # TODO: FieldPath construction is not just descriptor projection:
+  # protovalidate-visible paths also depend on encoding semantics such as
+  # DELIMITED message fields reporting TYPE_GROUP. Move this behind a dedicated
+  # validation path helper before more path variants accumulate here.
+  defp path_field_type(%{encoding: :delimited}), do: :TYPE_GROUP
+  defp path_field_type(field), do: field.source.type
+
+  defp map_key_type(%{cardinality: :map, map_key: key}), do: key.source.type
+  defp map_key_type(_field), do: nil
+
+  defp map_value_type(%{cardinality: :map, map_value: value}), do: value.source.type
+  defp map_value_type(_field), do: nil
+
+  defp map_subscript(%{type: :TYPE_BOOL}, key) when is_boolean(key), do: {:bool_key, key}
+
+  defp map_subscript(%{type: type}, key)
+       when type in [
+              :TYPE_INT32,
+              :TYPE_INT64,
+              :TYPE_SINT32,
+              :TYPE_SINT64,
+              :TYPE_SFIXED32,
+              :TYPE_SFIXED64
+            ] and
+              is_integer(key),
+       do: {:int_key, key}
+
+  defp map_subscript(%{type: type}, key)
+       when type in [:TYPE_UINT32, :TYPE_UINT64, :TYPE_FIXED32, :TYPE_FIXED64] and
+              is_integer(key),
+       do: {:uint_key, key}
+
+  defp map_subscript(%{type: :TYPE_STRING}, key) when is_binary(key), do: {:string_key, key}
+  defp map_subscript(_field, _key), do: nil
+
+  defp message_oneof_fields(fields) do
+    Enum.map_join(fields, ", ", &Atom.to_string/1)
+  end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+end

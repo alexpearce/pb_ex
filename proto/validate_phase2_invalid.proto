@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package validate_phase2_invalid;
+
+import "buf/validate/validate.proto";
+
+message InvalidMessageCEL {
+  option (buf.validate.message).cel = {
+    id: "bad"
+    message: "bad expression"
+    expression: "this.foo.bar"
+  };
+
+  string value = 1;
+}

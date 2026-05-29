@@ -1,0 +1,6 @@
+Recommended.Editions_Proto2.JsonInput.FieldNameExtension.Validator
+Recommended.Proto2.JsonInput.FieldNameExtension.Validator
+Required.EditionUnstable.ProtobufInput.ValidBytes.JsonOutput
+Required.EditionUnstable.ProtobufInput.ValidBytes.ProtobufOutput
+Required.EditionUnstable.ProtobufInput.ValidMap.Bytes.JsonOutput
+Required.EditionUnstable.ProtobufInput.ValidMap.Bytes.ProtobufOutput

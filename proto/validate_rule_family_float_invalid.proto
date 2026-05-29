@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package validate_rule_family_float_invalid;
+
+import "buf/validate/validate.proto";
+
+message WrongFloatRules {
+  float value = 1 [(buf.validate.field).double.gt = 0];
+}
