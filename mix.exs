@@ -1,8 +1,8 @@
 defmodule PB.MixProject do
   use Mix.Project
 
-  @version "1.0.0"
-  @source_url "https://github.com/hansihe/pb"
+  @version "0.1.0"
+  @source_url "https://github.com/hansihe/pb_ex"
 
   def project do
     [
