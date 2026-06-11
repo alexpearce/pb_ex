@@ -188,9 +188,6 @@ defmodule PB.CEL.Checker.Types do
 
       {:abstract, name, params} ->
         Type.abstract(name, Enum.map(params, &to_cel(&1, bindings)))
-
-      {:var, _id} ->
-        Type.dyn()
     end
   end
 

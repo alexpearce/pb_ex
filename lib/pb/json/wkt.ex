@@ -848,7 +848,7 @@ defmodule PB.JSON.WKT do
   end
 
   defp take_digits(input, n) when byte_size(input) >= n do
-    <<head::binary-size(n), rest::binary>> = input
+    <<head::binary-size(^n), rest::binary>> = input
 
     case parse_unsigned(head) do
       {:ok, v} -> {:ok, v, rest}

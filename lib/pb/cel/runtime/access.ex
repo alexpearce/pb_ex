@@ -204,10 +204,6 @@ defmodule PB.CEL.Runtime.Access do
     end
   end
 
-  defp message_select(_message_runtime, _schema, _operand, _field, _test_only?) do
-    {:error, "field selection requires message"}
-  end
-
   defp message_select_ref(
          message_runtime,
          schema,

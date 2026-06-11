@@ -214,8 +214,31 @@ defmodule PB.Codegen.Encoder do
   defp emit_field_step(ctx, msg_name, field, targets) do
     step = field_step_name(msg_name, field.name)
     field_path = quote(do: path ++ [unquote(field.name)])
-    field_ast = Macro.escape(runtime_field(ctx, field))
     encode_expr = field_encode_expr(ctx, field, quote(do: value), quote(do: value_path), targets)
+
+    append_ast =
+      quote do
+        with {:ok, encoded} <- unquote(encode_expr) do
+          {:ok, [{unquote(field.number), encoded} | acc]}
+        end
+      end
+
+    # Message fields are never skipped (see PB.Codegen.Runtime.skip_encode_field?/2),
+    # so only emit the guard where a default value can actually be elided.
+    present_ast =
+      if skippable_field?(field) do
+        field_ast = Macro.escape(runtime_field(ctx, field))
+
+        quote do
+          if PB.Codegen.Runtime.skip_encode_field?(unquote(field_ast), value) do
+            {:ok, acc}
+          else
+            unquote(append_ast)
+          end
+        end
+      else
+        append_ast
+      end
 
     quote do
       defp unquote(step)(data, acc, path, opts) do
@@ -227,21 +250,13 @@ defmodule PB.Codegen.Encoder do
 
           {:ok, value} ->
             value_path = unquote(field_path)
-
-            if PB.Codegen.Runtime.skip_encode_field?(
-                 unquote(field_ast),
-                 value
-               ) do
-              {:ok, acc}
-            else
-              with {:ok, encoded} <- unquote(encode_expr) do
-                {:ok, [{unquote(field.number), encoded} | acc]}
-              end
-            end
+            unquote(present_ast)
         end
       end
     end
   end
+
+  defp skippable_field?(field), do: field.type != :TYPE_MESSAGE
 
   defp emit_oneof_step(ctx, msg, msg_name, oneof, targets) do
     step = oneof_step_name(msg_name, oneof.name)
@@ -399,6 +414,18 @@ defmodule PB.Codegen.Encoder do
     end
   end
 
+  defp typed_value_expr(ctx, field, value_ast, path_ast, _targets) do
+    field_ast = Macro.escape(runtime_field(ctx, field))
+
+    quote do
+      PB.Codegen.Runtime.encode_typed_value(
+        unquote(field_ast),
+        unquote(value_ast),
+        unquote(path_ast)
+      )
+    end
+  end
+
   defp message_encode_expr(field, value_ast, path_ast, targets) do
     case targets[field.type_name] do
       nil ->
@@ -412,18 +439,6 @@ defmodule PB.Codegen.Encoder do
         quote do
           unquote(fun)(unquote(value_ast), unquote(path_ast), opts)
         end
-    end
-  end
-
-  defp typed_value_expr(ctx, field, value_ast, path_ast, _targets) do
-    field_ast = Macro.escape(runtime_field(ctx, field))
-
-    quote do
-      PB.Codegen.Runtime.encode_typed_value(
-        unquote(field_ast),
-        unquote(value_ast),
-        unquote(path_ast)
-      )
     end
   end
 

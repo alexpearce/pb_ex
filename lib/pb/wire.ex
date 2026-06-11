@@ -68,7 +68,7 @@ defmodule PB.Wire do
   def decode_tag(bin) do
     with {:ok, value, rest} <- decode_varint(bin),
          size = byte_size(bin) - byte_size(rest),
-         <<raw::binary-size(size), _::binary>> = bin,
+         <<raw::binary-size(^size), _::binary>> = bin,
          :ok <- validate_canonical_varint(raw, value) do
       {:ok, value, rest}
     end
@@ -148,7 +148,7 @@ defmodule PB.Wire do
   def read_wire_raw(_field_number, 0, bin) do
     with {:ok, _value, rest} <- decode_varint(bin) do
       size = byte_size(bin) - byte_size(rest)
-      <<raw::binary-size(size), _::binary>> = bin
+      <<raw::binary-size(^size), _::binary>> = bin
       {:ok, raw, rest}
     end
   end
@@ -162,7 +162,7 @@ defmodule PB.Wire do
     with {:ok, len, rest_after_len} <- decode_varint(bin),
          {:ok, _value, rest} <- read_length_delimited(len, rest_after_len) do
       size = byte_size(bin) - byte_size(rest)
-      <<raw::binary-size(size), _::binary>> = bin
+      <<raw::binary-size(^size), _::binary>> = bin
       {:ok, raw, rest}
     end
   end
@@ -228,7 +228,7 @@ defmodule PB.Wire do
          :ok <- validate_field_number(fnum),
          :ok <- validate_wire_type(wtype) do
       tag_size = byte_size(bin) - byte_size(rest_after_tag)
-      <<tag_raw::binary-size(tag_size), _::binary>> = bin
+      <<tag_raw::binary-size(^tag_size), _::binary>> = bin
 
       cond do
         wtype == 4 and fnum == field_number ->
@@ -255,7 +255,7 @@ defmodule PB.Wire do
   end
 
   def read_length_delimited(len, rest) when len <= byte_size(rest) do
-    <<value::binary-size(len), rest::binary>> = rest
+    <<value::binary-size(^len), rest::binary>> = rest
     {:ok, value, rest}
   end
 

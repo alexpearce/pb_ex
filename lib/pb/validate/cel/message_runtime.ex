@@ -79,7 +79,6 @@ defmodule PB.Validate.CEL.MessageRuntime do
         {:ok, {:message, message, payload}}
       end
     else
-      :error -> :unknown
       :unknown -> :unknown
       {:error, reason} -> {:error, reason}
     end

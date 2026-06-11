@@ -697,7 +697,6 @@ defmodule PB.CEL.Evaluator do
   defp normalize_name(name) when is_binary(name), do: name
 
   defp value_kind(:null), do: "null"
-  defp value_kind({:__cel_error__, %Error{}}), do: "error"
   defp value_kind({kind, _value}), do: Atom.to_string(kind)
   defp value_kind({:enum, name, _value}), do: name
   defp value_kind({:object, type_url, _value}), do: type_url
