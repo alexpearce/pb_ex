@@ -23,6 +23,13 @@ defmodule PB.ValidateTest do
       |> PB.decode_descriptor_set!()
       |> PB.compile()
 
+    structural_nested_schema =
+      @structural_binpb_path
+      |> File.read!()
+      |> PB.decode_descriptor_set!()
+      |> with_nested_message_oneof_parent()
+      |> PB.compile()
+
     predefined_schema =
       @predefined_binpb_path
       |> File.read!()
@@ -39,7 +46,8 @@ defmodule PB.ValidateTest do
      phase2_schema: phase2_schema,
      predefined_schema: predefined_schema,
      custom_predefined_schema: custom_predefined_schema,
-     structural_schema: structural_schema}
+     structural_schema: structural_schema,
+     structural_nested_schema: structural_nested_schema}
   end
 
   test "evaluates message-level user CEL", %{phase2_schema: schema} do
@@ -713,12 +721,44 @@ defmodule PB.ValidateTest do
 
     assert missing.rule_id == "message.oneof"
     assert missing.message == "one of left, right must be set"
+    assert missing.field == nil
 
     assert {:error, %Error{violations: [multiple]}} =
              PB.Validate.validate(%{left: "set", right: "set"}, schema, message)
 
     assert multiple.rule_id == "message.oneof"
     assert multiple.message == "only one of left, right can be set"
+    assert multiple.field == nil
+  end
+
+  test "nested message-level oneof rules include the parent field path",
+       %{structural_nested_schema: schema} do
+    message = :"validate_structural.Outer"
+    expected_field = %{field_number: 1, field_name: "child", field_type: :TYPE_MESSAGE}
+
+    assert {:error, %Error{violations: [missing]}} =
+             PB.Validate.validate(%{child: %{}}, schema, message)
+
+    assert missing.rule_id == "message.oneof"
+    assert missing.message == "one of left, right must be set"
+    assert missing.field.elements == [expected_field]
+
+    assert {:error, %Error{violations: [multiple]}} =
+             PB.Validate.validate(%{child: %{left: "set", right: "set"}}, schema, message)
+
+    assert multiple.rule_id == "message.oneof"
+    assert multiple.message == "only one of left, right can be set"
+    assert multiple.field.elements == [expected_field]
+
+    assert PB.Validate.to_proto_violations([missing]) == %{
+             violations: [
+               %{
+                 rule_id: "message.oneof",
+                 message: "one of left, right must be set",
+                 field: %{elements: [expected_field]}
+               }
+             ]
+           }
   end
 
   test "validate!/3 raises the structured validation error", %{phase2_schema: schema} do
@@ -844,5 +884,29 @@ defmodule PB.ValidateTest do
                }
              ]
            }
+  end
+
+  defp with_nested_message_oneof_parent(%{file: files} = descriptor_set) do
+    parent_file = %{
+      name: "validate_structural_nested.proto",
+      package: "validate_structural",
+      syntax: "proto3",
+      message_type: [
+        %{
+          name: "Outer",
+          field: [
+            %{
+              name: "child",
+              number: 1,
+              label: :LABEL_OPTIONAL,
+              type: :TYPE_MESSAGE,
+              type_name: ".validate_structural.MessageOneofRules"
+            }
+          ]
+        }
+      ]
+    }
+
+    %{descriptor_set | file: files ++ [parent_file]}
   end
 end

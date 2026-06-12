@@ -29,6 +29,7 @@ defmodule PB.Validate do
   alias PB.Schema.Features
   alias PB.Validate.Context
   alias PB.Validate.Error
+  alias PB.Validate.Path
   alias PB.Validate.Schema, as: ValidateSchema
   alias PB.Validate.Schema.RuleSet
   alias PB.Validate.Violation
@@ -246,7 +247,7 @@ defmodule PB.Validate do
         [
           violation(
             "required",
-            field_path(ctx.path, field),
+            Path.field_path(ctx.path, field),
             ValidateSchema.field_required_rule_path()
           )
         ]
@@ -276,8 +277,11 @@ defmodule PB.Validate do
       []
     else
       case FieldReader.fetch(ctx.schema, ctx.message, ctx.data, field.name, field) do
-        {:ok, raw_value} -> validate_native_ops(ops, raw_value, field_path(ctx.path, field), nil)
-        :error -> []
+        {:ok, raw_value} ->
+          validate_native_ops(ops, raw_value, Path.field_path(ctx.path, field), nil)
+
+        :error ->
+          []
       end
     end
   end
@@ -297,14 +301,14 @@ defmodule PB.Validate do
               ctx.schema,
               op,
               value,
-              field_path(ctx.path, field),
+              Path.field_path(ctx.path, field),
               ValidateSchema.field_cel_rule_path(index),
               ctx.runtime
             )
           end)
 
         {:error, reason} ->
-          raise_cel_value_error!(ctx.message_name, api_path(ctx.path, field), reason)
+          raise_cel_value_error!(ctx.message_name, Path.api_path(ctx.path, field), reason)
       end
     end
   end
@@ -317,7 +321,7 @@ defmodule PB.Validate do
     else
       case CELMessage.from_decoded(ctx.schema, ctx.message_name, ctx.data) do
         {:ok, value} ->
-          violation_path = if ctx.path == [], do: nil, else: field_path(ctx.path)
+          violation_path = Path.current_message_field_path(ctx.path)
 
           ops
           |> Enum.with_index()
@@ -334,7 +338,7 @@ defmodule PB.Validate do
           end)
 
         {:error, reason} ->
-          raise_cel_value_error!(ctx.message_name, api_path(ctx.path), reason)
+          raise_cel_value_error!(ctx.message_name, Path.api_path(ctx.path), reason)
       end
     end
   end
@@ -353,7 +357,7 @@ defmodule PB.Validate do
             item_field,
             value,
             ctx.message_name,
-            field_path(ctx.path ++ [path_element(field, {:index, index})]),
+            Path.field_path(ctx.path, field, {:index, index}),
             ctx.runtime
           )
         end)
@@ -385,7 +389,7 @@ defmodule PB.Validate do
             field.map_key,
             key,
             ctx.message_name,
-            field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
+            Path.field_path(ctx.path, field, Path.map_subscript(field.map_key, key)),
             ctx.runtime,
             for_key: true
           )
@@ -406,7 +410,7 @@ defmodule PB.Validate do
             field.map_value,
             value,
             ctx.message_name,
-            field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
+            Path.field_path(ctx.path, field, Path.map_subscript(field.map_key, key)),
             ctx.runtime
           )
         end)
@@ -489,7 +493,7 @@ defmodule PB.Validate do
         end)
 
       {:error, reason} ->
-        raise_cel_value_error!(message_name, api_path(field_path), reason)
+        raise_cel_value_error!(message_name, Path.api_path(field_path), reason)
     end
   end
 
@@ -625,7 +629,7 @@ defmodule PB.Validate do
       {:ok, value} ->
         case fetch_message(ctx.schema, field.type_name) do
           {:ok, nested} ->
-            item_path = ctx.path ++ [path_element(field)]
+            item_path = Path.append_field(ctx.path, field)
 
             value =
               project_message!(
@@ -672,7 +676,7 @@ defmodule PB.Validate do
                 if nested_rule_set_ignored?(ctx.schema, item_rules, item_field, value) do
                   []
                 else
-                  item_path = ctx.path ++ [path_element(field, {:index, index})]
+                  item_path = Path.append_field(ctx.path, field, {:index, index})
 
                   value =
                     project_message!(
@@ -722,7 +726,8 @@ defmodule PB.Validate do
                 if nested_rule_set_ignored?(ctx.schema, value_rules, value_field, value) do
                   []
                 else
-                  item_path = ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]
+                  item_path =
+                    Path.append_field(ctx.path, field, Path.map_subscript(field.map_key, key))
 
                   value =
                     project_message!(
@@ -796,7 +801,7 @@ defmodule PB.Validate do
 
   defp validate_oneof(ctx, oneof) do
     if get_in(oneof, [:validate, :required]) == true and not Map.has_key?(ctx.data, oneof.name) do
-      [violation("required", field_path(ctx.path ++ [oneof_path_element(oneof)]), nil)]
+      [violation("required", ctx.path |> Path.append_oneof(oneof) |> Path.field_path(), nil)]
     else
       []
     end
@@ -817,7 +822,7 @@ defmodule PB.Validate do
           [
             violation(
               "message.oneof",
-              nil,
+              Path.current_message_field_path(ctx.path),
               nil,
               "only one of #{message_oneof_fields(oneof.fields)} can be set"
             )
@@ -827,7 +832,7 @@ defmodule PB.Validate do
           [
             violation(
               "message.oneof",
-              nil,
+              Path.current_message_field_path(ctx.path),
               nil,
               "one of #{message_oneof_fields(oneof.fields)} must be set"
             )
@@ -963,59 +968,6 @@ defmodule PB.Validate do
     }
   end
 
-  defp field_path(nil), do: nil
-  defp field_path([]), do: nil
-  defp field_path(elements), do: %{elements: elements}
-  defp field_path(path, field), do: field_path(path ++ [path_element(field)])
-
-  defp path_element(field, subscript \\ nil) do
-    %{
-      field_number: field.number,
-      field_name: Atom.to_string(field.name),
-      field_type: path_field_type(field)
-    }
-    |> maybe_put(:key_type, map_key_type(field))
-    |> maybe_put(:value_type, map_value_type(field))
-    |> maybe_put(:subscript, subscript)
-  end
-
-  defp oneof_path_element(oneof), do: %{field_name: Atom.to_string(oneof.name)}
-
-  # TODO: FieldPath construction is not just descriptor projection:
-  # protovalidate-visible paths also depend on encoding semantics such as
-  # DELIMITED message fields reporting TYPE_GROUP. Move this behind a dedicated
-  # validation path helper before more path variants accumulate here.
-  defp path_field_type(%{encoding: :delimited}), do: :TYPE_GROUP
-  defp path_field_type(field), do: field.source.type
-
-  defp map_key_type(%{cardinality: :map, map_key: key}), do: key.source.type
-  defp map_key_type(_field), do: nil
-
-  defp map_value_type(%{cardinality: :map, map_value: value}), do: value.source.type
-  defp map_value_type(_field), do: nil
-
-  defp map_subscript(%{type: :TYPE_BOOL}, key) when is_boolean(key), do: {:bool_key, key}
-
-  defp map_subscript(%{type: type}, key)
-       when type in [
-              :TYPE_INT32,
-              :TYPE_INT64,
-              :TYPE_SINT32,
-              :TYPE_SINT64,
-              :TYPE_SFIXED32,
-              :TYPE_SFIXED64
-            ] and
-              is_integer(key),
-       do: {:int_key, key}
-
-  defp map_subscript(%{type: type}, key)
-       when type in [:TYPE_UINT32, :TYPE_UINT64, :TYPE_FIXED32, :TYPE_FIXED64] and
-              is_integer(key),
-       do: {:uint_key, key}
-
-  defp map_subscript(%{type: :TYPE_STRING}, key) when is_binary(key), do: {:string_key, key}
-  defp map_subscript(_field, _key), do: nil
-
   defp raise_cel_value_error!(message_name, path, reason) do
     raise cel_value_error(reason, message_name, path)
   end
@@ -1077,45 +1029,10 @@ defmodule PB.Validate do
       }
   end
 
-  defp api_path(nil), do: []
-  defp api_path(%{elements: elements}), do: api_path(elements)
-  defp api_path(elements) when is_list(elements), do: Enum.flat_map(elements, &api_path_element/1)
-
-  defp api_path(path, field), do: api_path(path) ++ [field.name]
-
-  defp api_path_element(%{field_name: name} = element) do
-    field = api_field_name(name)
-
-    case Map.get(element, :subscript) do
-      nil -> [field]
-      subscript -> [field, api_subscript(subscript)]
-    end
-  end
-
-  defp api_path_element(element), do: [element]
-
-  defp api_field_name(name) when is_binary(name) do
-    String.to_existing_atom(name)
-  rescue
-    ArgumentError -> name
-  end
-
-  defp api_field_name(name), do: name
-
-  defp api_subscript({:index, index}), do: {:index, index}
-
-  defp api_subscript({kind, key}) when kind in [:bool_key, :int_key, :uint_key, :string_key],
-    do: {:key, key}
-
-  defp api_subscript(other), do: other
-
   defp message_oneof_fields(fields) do
     Enum.map_join(fields, ", ", &Atom.to_string/1)
   end
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

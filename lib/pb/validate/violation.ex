@@ -7,7 +7,9 @@ defmodule PB.Validate.Violation do
   when an exact protobuf result is needed.
   """
 
-  @type field_path :: %{required(:elements) => [map()]}
+  alias PB.Validate.Path
+
+  @type field_path :: Path.field_path()
 
   @type t :: %__MODULE__{
           rule_id: String.t(),
@@ -35,7 +37,7 @@ defmodule PB.Validate.Violation do
   def to_proto(%__MODULE__{} = violation) do
     %{}
     |> maybe_put(:rule_id, violation.rule_id)
-    |> maybe_put(:field, canonical_field_path(violation.field))
+    |> maybe_put(:field, Path.canonical_field_path(violation.field))
     |> maybe_put(:rule, violation.proto_rule)
     |> maybe_put(:message, violation.message)
     |> maybe_put(:for_key, violation.for_key)
@@ -54,20 +56,6 @@ defmodule PB.Validate.Violation do
   end
 
   defp canonical_rule(proto, _violation), do: proto
-
-  defp canonical_field_path(nil), do: nil
-
-  defp canonical_field_path(%{elements: elements} = field) when is_list(elements) do
-    %{field | elements: Enum.map(elements, &canonical_field_element/1)}
-  end
-
-  defp canonical_field_path(field), do: field
-
-  defp canonical_field_element(%{subscript: _subscript} = element), do: element
-
-  defp canonical_field_element(element) when is_map(element) do
-    Map.drop(element, [:key_type, :value_type])
-  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

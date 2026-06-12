@@ -20,6 +20,7 @@ defmodule PB.Validate.Schema do
   #     `:message_oneofs` are stored directly in the `:validate` map.
 
   alias PB.Schema.Prepare
+  alias PB.Validate.Path
 
   defmodule CELSource do
     @moduledoc false
@@ -48,7 +49,7 @@ defmodule PB.Validate.Schema do
     alias PB.CEL.Checked
 
     @type kind :: :message_cel | :field_cel | :predefined
-    @type field_path :: %{required(:elements) => [map()]}
+    @type field_path :: PB.Validate.Path.field_path()
 
     @type t :: %__MODULE__{
             kind: kind(),
@@ -99,7 +100,7 @@ defmodule PB.Validate.Schema do
     # stores accepted enum runtime representations, both numbers and atoms.
 
     @type kind :: :any_in | :any_not_in | :enum_defined_only
-    @type field_path :: %{required(:elements) => [map()]}
+    @type field_path :: PB.Validate.Path.field_path()
 
     @type t :: %__MODULE__{
             kind: kind(),
@@ -226,57 +227,42 @@ defmodule PB.Validate.Schema do
 
   @doc false
   def field_required_rule_path do
-    field_path([rule_element(25, "required", :TYPE_BOOL)])
+    Path.field_path([Path.rule_element(25, "required", :TYPE_BOOL)])
   end
 
   @doc false
   def field_cel_rule_path(index, prefix \\ []) when is_integer(index) and index >= 0 do
-    field_path(
-      Enum.map(prefix, &field_rule_element/1) ++
+    Path.field_path(
+      Enum.map(prefix, &Path.rule_field_element/1) ++
         [
-          rule_element(23, "cel", :TYPE_MESSAGE, {:index, index})
+          Path.rule_element(23, "cel", :TYPE_MESSAGE, {:index, index})
         ]
     )
   end
 
   @doc false
   def field_cel_expression_rule_path(index, prefix \\ []) when is_integer(index) and index >= 0 do
-    field_path(
-      Enum.map(prefix, &field_rule_element/1) ++
+    Path.field_path(
+      Enum.map(prefix, &Path.rule_field_element/1) ++
         [
-          rule_element(29, "cel_expression", :TYPE_STRING, {:index, index})
+          Path.rule_element(29, "cel_expression", :TYPE_STRING, {:index, index})
         ]
     )
   end
 
   @doc false
   def message_cel_rule_path(index) when is_integer(index) and index >= 0 do
-    field_path([rule_element(3, "cel", :TYPE_MESSAGE, {:index, index})])
+    Path.field_path([Path.rule_element(3, "cel", :TYPE_MESSAGE, {:index, index})])
   end
 
   @doc false
   def message_cel_expression_rule_path(index) when is_integer(index) and index >= 0 do
-    field_path([rule_element(5, "cel_expression", :TYPE_STRING, {:index, index})])
+    Path.field_path([Path.rule_element(5, "cel_expression", :TYPE_STRING, {:index, index})])
   end
 
   @doc false
   def rule_path(fields) when is_list(fields) do
-    field_path(Enum.map(fields, &field_rule_element/1))
-  end
-
-  @doc false
-  def field_path(nil), do: nil
-  def field_path([]), do: nil
-  def field_path(elements), do: %{elements: elements}
-
-  @doc false
-  def rule_element(number, name, type, subscript \\ nil) do
-    %{
-      field_number: number,
-      field_name: name,
-      field_type: type
-    }
-    |> maybe_put(:subscript, subscript)
+    Path.field_path(Enum.map(fields, &Path.rule_field_element/1))
   end
 
   @standard_rule_schema_key :standard_rule_schema
@@ -422,14 +408,4 @@ defmodule PB.Validate.Schema do
     message
     |> Map.put(:extensions_by_name, extensions_by_name)
   end
-
-  defp field_rule_element(field) do
-    rule_element(field.number, rule_field_name(field), field.source.type)
-  end
-
-  defp rule_field_name(%{kind: :extension, name: name}), do: "[#{Atom.to_string(name)}]"
-  defp rule_field_name(%{name: name}), do: Atom.to_string(name)
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end
