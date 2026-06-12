@@ -117,6 +117,21 @@ defmodule PB.ValidateTest do
            }
   end
 
+  test "field-level CEL reports wrong-typed message values as PB.ValueError",
+       %{phase2_schema: schema} do
+    error =
+      assert_raise PB.ValueError, fn ->
+        PB.Validate.validate(%{value: "oops"}, schema, :"validate_phase2.NowCEL")
+      end
+
+    assert error.operation == :validate
+    assert error.kind == :invalid_value
+    assert error.message_name == :"validate_phase2.NowCEL"
+    assert error.path == [:value]
+    assert error.expected == {:message, :"google.protobuf.Timestamp"}
+    assert error.got == "oops"
+  end
+
   test "evaluates message-level cel_expression shorthand", %{phase2_schema: schema} do
     message = :"validate_phase2.MessageCELExpression"
 

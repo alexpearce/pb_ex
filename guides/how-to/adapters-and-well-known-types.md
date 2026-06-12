@@ -16,8 +16,8 @@ returning `{:ok, value} | {:error, reason}`:
 ```elixir
 adapter =
   %PB.Adapter{
-    to_proto: {MyApp.TimestampCodec, :to_proto},     # app value  -> proto-shaped map
-    from_proto: {MyApp.TimestampCodec, :from_proto},  # proto map   -> app value
+    to_proto: {MyApp.TimestampCodec, :to_proto},     # app value -> field map
+    from_proto: {MyApp.TimestampCodec, :from_proto},  # field map -> app value
     type: quote(do: DateTime.t())                     # optional typespec, for docs
   }
 ```
@@ -31,8 +31,16 @@ PB.compile(descriptor_set,
 ```
 
 Adapted message fields decode to the adapter's Elixir value and encode from that
-same value. The callbacks convert between the app value and the ordinary
-proto-shaped map; PB still owns wire encoding and decoding.
+same value. The callbacks convert one message level at a time; PB still owns
+wire encoding and decoding, and PB still recurses into child messages.
+
+That recursion rule matters for nested adapted messages:
+
+- `from_proto` receives a field map whose message-typed children have already
+  been converted to their native representation.
+- `to_proto` must return a field map whose message-typed children are still in
+  their native representation. Do not pre-convert child messages to protobuf
+  maps inside the adapter.
 
 ### Invariants
 

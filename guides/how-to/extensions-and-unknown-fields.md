@@ -30,7 +30,7 @@ Known extension values are resolved through the schema and stored under
 
 ```elixir
 %{
-  __extensions__: %{"my.pkg.priority" => 5}
+  __extensions__: %{:"my.pkg.priority" => 5}
 }
 ```
 

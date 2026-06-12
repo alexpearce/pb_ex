@@ -23,6 +23,7 @@ defmodule PB.Validate do
   alias PB.Validate.CEL.FieldReader
   alias PB.Validate.CEL.MessageRuntime, as: CELMessage
   alias PB.Validate.CEL.MessageSchema, as: CELSchema
+  alias PB.Runtime.Errors, as: RuntimeErrors
   alias PB.Runtime.MessageView
   alias PB.Runtime.Scalar
   alias PB.Schema.Features
@@ -287,20 +288,24 @@ defmodule PB.Validate do
     if ops == [] do
       []
     else
-      {:ok, value} = FieldReader.read(ctx.schema, ctx.message, ctx.data, field.name, field)
+      case FieldReader.read(ctx.schema, ctx.message, ctx.data, field.name, field) do
+        {:ok, value} ->
+          ops
+          |> Enum.with_index()
+          |> Enum.flat_map(fn {op, index} ->
+            validate_cel_op(
+              ctx.schema,
+              op,
+              value,
+              field_path(ctx.path, field),
+              ValidateSchema.field_cel_rule_path(index),
+              ctx.runtime
+            )
+          end)
 
-      ops
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {op, index} ->
-        validate_cel_op(
-          ctx.schema,
-          op,
-          value,
-          field_path(ctx.path, field),
-          ValidateSchema.field_cel_rule_path(index),
-          ctx.runtime
-        )
-      end)
+        {:error, reason} ->
+          raise_cel_value_error!(ctx.message_name, api_path(ctx.path, field), reason)
+      end
     end
   end
 
@@ -310,22 +315,27 @@ defmodule PB.Validate do
     if ops == [] do
       []
     else
-      {:ok, value} = CELMessage.from_decoded(ctx.schema, ctx.message_name, ctx.data)
-      violation_path = if ctx.path == [], do: nil, else: field_path(ctx.path)
+      case CELMessage.from_decoded(ctx.schema, ctx.message_name, ctx.data) do
+        {:ok, value} ->
+          violation_path = if ctx.path == [], do: nil, else: field_path(ctx.path)
 
-      ops
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {op, index} ->
-        validate_cel_op(
-          ctx.schema,
-          op,
-          value,
-          violation_path,
-          ValidateSchema.message_cel_rule_path(index),
-          ctx.runtime,
-          proto_rule: nil
-        )
-      end)
+          ops
+          |> Enum.with_index()
+          |> Enum.flat_map(fn {op, index} ->
+            validate_cel_op(
+              ctx.schema,
+              op,
+              value,
+              violation_path,
+              ValidateSchema.message_cel_rule_path(index),
+              ctx.runtime,
+              proto_rule: nil
+            )
+          end)
+
+        {:error, reason} ->
+          raise_cel_value_error!(ctx.message_name, api_path(ctx.path), reason)
+      end
     end
   end
 
@@ -342,6 +352,7 @@ defmodule PB.Validate do
             rules,
             item_field,
             value,
+            ctx.message_name,
             field_path(ctx.path ++ [path_element(field, {:index, index})]),
             ctx.runtime
           )
@@ -373,6 +384,7 @@ defmodule PB.Validate do
             rules,
             field.map_key,
             key,
+            ctx.message_name,
             field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
             ctx.runtime,
             for_key: true
@@ -393,6 +405,7 @@ defmodule PB.Validate do
             rules,
             field.map_value,
             value,
+            ctx.message_name,
             field_path(ctx.path ++ [path_element(field, map_subscript(field.map_key, key))]),
             ctx.runtime
           )
@@ -408,6 +421,7 @@ defmodule PB.Validate do
          %RuleSet{} = rules,
          field,
          raw_value,
+         message_name,
          field_path,
          context,
          opts \\ []
@@ -423,7 +437,16 @@ defmodule PB.Validate do
         for_key = Keyword.get(opts, :for_key)
 
         validate_native_ops(rules.native, raw_value, field_path, for_key) ++
-          validate_rule_set_cel(schema, rules, field, raw_value, field_path, context, for_key)
+          validate_rule_set_cel(
+            schema,
+            rules,
+            field,
+            raw_value,
+            message_name,
+            field_path,
+            context,
+            for_key
+          )
     end
   end
 
@@ -432,6 +455,7 @@ defmodule PB.Validate do
          %RuleSet{cel: []},
          _field,
          _raw_value,
+         _message_name,
          _field_path,
          _context,
          _for_key
@@ -443,25 +467,30 @@ defmodule PB.Validate do
          %RuleSet{} = rules,
          field,
          raw_value,
+         message_name,
          field_path,
          context,
          for_key
        ) do
-    {:ok, value} = CELMessage.field_value(schema, field, raw_value)
+    case CELMessage.field_value(schema, field, raw_value) do
+      {:ok, value} ->
+        rules.cel
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {op, index} ->
+          validate_cel_op(
+            schema,
+            op,
+            value,
+            field_path,
+            ValidateSchema.field_cel_rule_path(index),
+            context,
+            for_key: for_key
+          )
+        end)
 
-    rules.cel
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {op, index} ->
-      validate_cel_op(
-        schema,
-        op,
-        value,
-        field_path,
-        ValidateSchema.field_cel_rule_path(index),
-        context,
-        for_key: for_key
-      )
-    end)
+      {:error, reason} ->
+        raise_cel_value_error!(message_name, api_path(field_path), reason)
+    end
   end
 
   defp validate_cel_op(schema, op, value, field_path, fallback_rule_path, context, opts \\ []) do
@@ -986,6 +1015,99 @@ defmodule PB.Validate do
 
   defp map_subscript(%{type: :TYPE_STRING}, key) when is_binary(key), do: {:string_key, key}
   defp map_subscript(_field, _key), do: nil
+
+  defp raise_cel_value_error!(message_name, path, reason) do
+    raise cel_value_error(reason, message_name, path)
+  end
+
+  defp cel_value_error({:invalid_message_value, type_name, value}, message_name, path) do
+    %PB.ValueError{
+      operation: :validate,
+      message_name: message_name,
+      kind: :invalid_value,
+      path: path,
+      expected: {:message, type_name},
+      got: value
+    }
+  end
+
+  defp cel_value_error({:message_type_mismatch, type_name, actual}, message_name, path) do
+    %PB.ValueError{
+      operation: :validate,
+      message_name: message_name,
+      kind: :invalid_value,
+      path: path,
+      expected: {:message, type_name},
+      got: {:message, actual}
+    }
+  end
+
+  defp cel_value_error({:invalid_literal_field_value, type, value}, message_name, path) do
+    %PB.ValueError{
+      operation: :validate,
+      message_name: message_name,
+      kind: :invalid_value,
+      path: path,
+      expected: type,
+      got: value
+    }
+  end
+
+  defp cel_value_error({:unsupported_field_value, type, value}, message_name, path) do
+    %PB.ValueError{
+      operation: :validate,
+      message_name: message_name,
+      kind: :invalid_value,
+      path: path,
+      expected: type,
+      got: value
+    }
+  end
+
+  defp cel_value_error(reason, message_name, path) do
+    RuntimeErrors.to_error(reason, :validate, message_name)
+  rescue
+    ArgumentError ->
+      %PB.ValueError{
+        operation: :validate,
+        message_name: message_name,
+        kind: :invalid_value,
+        path: path,
+        reason: reason
+      }
+  end
+
+  defp api_path(nil), do: []
+  defp api_path(%{elements: elements}), do: api_path(elements)
+  defp api_path(elements) when is_list(elements), do: Enum.flat_map(elements, &api_path_element/1)
+
+  defp api_path(path, field), do: api_path(path) ++ [field.name]
+
+  defp api_path_element(%{field_name: name} = element) do
+    field = api_field_name(name)
+
+    case Map.get(element, :subscript) do
+      nil -> [field]
+      subscript -> [field, api_subscript(subscript)]
+    end
+  end
+
+  defp api_path_element(element), do: [element]
+
+  defp api_field_name(name) when is_binary(name) do
+    String.to_existing_atom(name)
+  rescue
+    ArgumentError -> name
+  end
+
+  defp api_field_name(name), do: name
+
+  defp api_subscript({:index, index}), do: {:index, index}
+
+  defp api_subscript({kind, key}) when kind in [:bool_key, :int_key, :uint_key, :string_key],
+    do: {:key, key}
+
+  defp api_subscript(other), do: other
 
   defp message_oneof_fields(fields) do
     Enum.map_join(fields, ", ", &Atom.to_string/1)

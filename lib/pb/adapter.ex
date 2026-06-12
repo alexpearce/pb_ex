@@ -2,15 +2,20 @@ defmodule PB.Adapter do
   @moduledoc """
   Message-level app/proto conversion spec.
 
-  Adapters bridge the on-wire protobuf shape (a canonical map) and a
-  caller-chosen application term such as a tagged tuple, struct, or scalar.
-  Each adapter registers two `{module, function}` MFAs:
+  Adapters bridge PB's native message shape and a caller-chosen application term
+  such as a tagged tuple, struct, or scalar. Each adapter registers two
+  `{module, function}` MFAs:
 
-    * `:to_proto` — converts an application value to the protobuf-shaped map.
-    * `:from_proto` — converts a decoded protobuf map back to the application
+    * `:to_proto` — converts an application value to a message field map.
+    * `:from_proto` — converts a message field map back to the application
       value.
 
   Callbacks must return `{:ok, value} | {:error, reason}`.
+
+  Adapter conversion is one message level only. PB owns recursion into child
+  messages, so child message values in both callback directions use the schema's
+  native representation. In particular, `:to_proto` must emit native child
+  values, not already-converted protobuf maps for those children.
 
       adapter =
         %PB.Adapter{

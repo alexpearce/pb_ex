@@ -12,7 +12,7 @@ Add `pb` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pb, "~> 1.0"}
+    {:pb, "~> 0.1.0"}
   ]
 end
 ```
@@ -104,8 +104,7 @@ compare the runtime path against the old generated-code reference.
 
 The upstream conformance suites are run with `scripts/run_protobuf_conformance.sh`
 and `scripts/run_protovalidate_conformance.sh`; CEL conformance fixtures are
-described in
-[docs/cel-conformance.md](https://github.com/hansihe/pb/blob/main/docs/cel-conformance.md).
+fetched with `scripts/fetch_cel_conformance.sh`.
 Current results and intentional deviations are documented in
 [Conformance status](guides/reference/conformance.md).
 

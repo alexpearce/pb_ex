@@ -3,7 +3,7 @@
 PB runs the upstream conformance suites for protobuf, CEL, and protovalidate.
 This page records the current results and the intentionally unsupported areas.
 The runner scripts and how to fetch testdata are documented in the repository
-(`scripts/` and `docs/cel-conformance.md`).
+(`scripts/`, including `scripts/fetch_cel_conformance.sh`).
 
 ## Protocol Buffers
 

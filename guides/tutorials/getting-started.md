@@ -14,7 +14,7 @@ By the end you will have:
 ```elixir
 def deps do
   [
-    {:pb, "~> 1.0"}
+    {:pb, "~> 0.1.0"}
   ]
 end
 ```
