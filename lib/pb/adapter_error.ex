@@ -1,8 +1,9 @@
 defmodule PB.AdapterError do
   @moduledoc """
-  An adapter `to_proto`/`from_proto` callback returned `{:error, reason}` or
-  raised. `:fqn` names the message, `:direction` is `:to_proto` or
-  `:from_proto`, and `:reason` carries the callback's reason. See `PB.Error`.
+  An adapter `to_proto`/`from_proto` callback returned `{:error, reason}`,
+  returned a non-tagged value, or raised. `:fqn` names the message,
+  `:direction` is `:to_proto` or `:from_proto`, and `:reason` carries the
+  callback's reason. See `PB.Error`.
   """
 
   @type t :: %__MODULE__{

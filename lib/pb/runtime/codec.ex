@@ -22,8 +22,8 @@ defmodule PB.Runtime.Codec do
       {:error, reason} ->
         {:error, {:adapter_error, fqn, direction, path, reason}}
 
-      value ->
-        {:ok, value}
+      other ->
+        {:error, {:adapter_error, fqn, direction, path, {:invalid_return, other}}}
     end
   rescue
     exception ->
