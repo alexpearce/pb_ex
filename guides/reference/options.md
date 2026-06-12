@@ -57,4 +57,4 @@ See [Decoding into structs](../how-to/structs-and-representation.md) and
 | Option | Values | Notes |
 |--------|--------|-------|
 | `:context` | `keyword \| map \| %PB.Validate.Context{}` | Runtime context for CEL evaluation. |
-| `:now` | `{:timestamp, unix_nanoseconds}` | Value bound to the `now` variable in CEL rules. |
+| `:now` | `integer \| DateTime.t() \| {:timestamp, unix_nanoseconds}` | Value bound to the `now` variable in CEL rules when `:context` is not supplied. |

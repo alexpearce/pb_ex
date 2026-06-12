@@ -38,7 +38,8 @@ defmodule PB.Validate do
 
   @message_name_key :__message_name__
 
-  @type result :: :ok | {:error, Error.t()}
+  @type result :: :ok | {:error, Error.t() | PB.OptionError.t()}
+  @typep validation_result :: :ok | {:error, Error.t()}
   @typep message_context :: %{
            required(:schema) => PB.schema(),
            required(:message_name) => PB.message_name(),
@@ -55,29 +56,59 @@ defmodule PB.Validate do
            }
          }
 
-  @spec validate(term(), PB.schema_source(), PB.message_name(), keyword) ::
-          result
-  def validate(data, schema, message_name, opts \\ [])
-      when is_atom(message_name) and is_list(opts) do
-    schema = PB.__compiled__(schema)
-    context = Context.from_options(opts)
+  @doc """
+  Validates `data` as `message_name` using `schema`.
 
-    schema
-    |> collect_violations(message_name, data, context)
-    |> result()
+  Rule failures return `{:error, %PB.Validate.Error{}}`. Option failures return
+  `{:error, %PB.OptionError{}}`. Caller-contract failures such as unknown
+  messages or values that do not match the message shape raise a `PB.Error`
+  struct.
+
+  Accepted options:
+
+    * `:context` - `%PB.Validate.Context{}` or keyword/map options passed to
+      `PB.Validate.Context.new/1`.
+    * `:now` - timestamp used for CEL `now`: unix nanoseconds, `DateTime`, or
+      a CEL timestamp tuple `{:timestamp, unix_nanoseconds}`.
+  """
+  @spec validate(term(), PB.schema_source(), PB.message_name(), keyword) :: result
+  def validate(data, schema, message_name, opts \\ []) when is_atom(message_name) do
+    result =
+      with {:ok, opts} <- normalize_opts(opts),
+           {:ok, context} <- validation_context(opts) do
+        schema = PB.__compiled__(schema)
+
+        schema
+        |> collect_violations(message_name, data, context)
+        |> result()
+      end
+
+    RuntimeErrors.normalize_result(result, :validate, message_name)
   end
 
+  @doc """
+  Validates `data` as `message_name` using `schema`, raising on validation or
+  option failure.
+
+  See `validate/4` for accepted options.
+  """
   @spec validate!(term(), PB.schema_source(), PB.message_name(), keyword) ::
           :ok
-  def validate!(data, schema, message_name, opts \\ [])
-      when is_atom(message_name) and is_list(opts) do
+  def validate!(data, schema, message_name, opts \\ []) when is_atom(message_name) do
     case validate(data, schema, message_name, opts) do
-      :ok -> :ok
-      {:error, %Error{} = error} -> raise error
+      :ok ->
+        :ok
+
+      {:error, %{__exception__: true} = error} ->
+        raise error
     end
   end
 
-  @spec to_proto_violations(result | Error.t() | [Violation.t() | map]) :: %{
+  @doc """
+  Converts validation violations to the canonical `buf.validate.Violations`
+  protobuf field shape.
+  """
+  @spec to_proto_violations(validation_result | Error.t() | [Violation.t() | map]) :: %{
           required(:violations) => [map()]
         }
   def to_proto_violations(:ok), do: %{violations: []}
@@ -89,6 +120,49 @@ defmodule PB.Validate do
 
   def to_proto_violations(violations) when is_list(violations) do
     %{violations: Enum.map(violations, &Violation.to_proto/1)}
+  end
+
+  defp normalize_opts(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      unknown = Keyword.keys(opts) -- [:context, :now]
+
+      cond do
+        unknown != [] ->
+          {:error, {:unknown_options, unknown}}
+
+        Keyword.has_key?(opts, :context) and invalid_context?(Keyword.fetch!(opts, :context)) ->
+          {:error, {:invalid_option, :context, Keyword.fetch!(opts, :context)}}
+
+        Keyword.has_key?(opts, :now) and invalid_now?(Keyword.fetch!(opts, :now)) ->
+          {:error, {:invalid_option, :now, Keyword.fetch!(opts, :now)}}
+
+        true ->
+          {:ok, opts}
+      end
+    else
+      {:error, {:invalid_options, RuntimeErrors.type_of(opts)}}
+    end
+  end
+
+  defp normalize_opts(opts), do: {:error, {:invalid_options, RuntimeErrors.type_of(opts)}}
+
+  defp invalid_context?(nil), do: false
+  defp invalid_context?(%Context{}), do: false
+  defp invalid_context?(context) when is_list(context), do: not Keyword.keyword?(context)
+  defp invalid_context?(context) when is_map(context), do: false
+  defp invalid_context?(_context), do: true
+
+  defp invalid_now?(ns) when is_integer(ns), do: false
+  defp invalid_now?(%DateTime{}), do: false
+  defp invalid_now?({:timestamp, ns}) when is_integer(ns), do: false
+  defp invalid_now?(_value), do: true
+
+  defp validation_context(opts) do
+    {:ok, Context.from_options(opts)}
+  rescue
+    ArgumentError ->
+      option = if Keyword.has_key?(opts, :context), do: :context, else: :now
+      {:error, {:invalid_option, option, Keyword.get(opts, option)}}
   end
 
   defp collect_violations(schema, message_name, data, context) do

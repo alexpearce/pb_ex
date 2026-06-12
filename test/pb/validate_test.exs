@@ -225,6 +225,37 @@ defmodule PB.ValidateTest do
     assert violation.source == "this > now"
   end
 
+  test "validate options are validated", %{phase2_schema: schema} do
+    message = :"validate_phase2.MessageCEL"
+
+    assert {:error,
+            %PB.OptionError{
+              operation: :validate,
+              message_name: ^message,
+              kind: :unknown_options,
+              options: [:bogus]
+            }} = PB.Validate.validate(%{value: "ok"}, schema, message, bogus: true)
+
+    assert {:error, %PB.OptionError{kind: :unknown_options, options: [:nowx]}} =
+             PB.Validate.validate(%{value: "ok"}, schema, message, nowx: 1_000_000_000)
+
+    assert {:error, %PB.OptionError{kind: :invalid_options, reason: :atom}} =
+             PB.Validate.validate(%{value: "ok"}, schema, message, :not_options)
+
+    assert {:error, %PB.OptionError{kind: :invalid_options, reason: :list}} =
+             PB.Validate.validate(%{value: "ok"}, schema, message, [:not_a_keyword])
+
+    assert {:error, %PB.OptionError{kind: :invalid_option, option: :now, value: :bad}} =
+             PB.Validate.validate(%{value: "ok"}, schema, message, now: :bad)
+
+    assert {:error, %PB.OptionError{kind: :invalid_option, option: :context, value: :bad}} =
+             PB.Validate.validate(%{value: "ok"}, schema, message, context: :bad)
+
+    assert_raise PB.OptionError, ~r/unknown option/, fn ->
+      PB.Validate.validate!(%{value: "ok"}, schema, message, bogus: true)
+    end
+  end
+
   test "evaluates predefined field CEL", %{predefined_schema: schema} do
     message = :"validate_predefined.StringRules"
 
