@@ -13,6 +13,10 @@ defmodule PB.JSON do
     * Duplicate JSON object keys are rejected as `kind: :malformed_json`
       errors — OTP's default decoder silently keeps the last occurrence,
       masking ProtoJSON `FieldNameDuplicate` violations.
+    * Decode enforces a fixed recursion-depth limit of 100, matching the wire
+      codec's guard for recursive input. JSON container nesting, message
+      nesting, and `Value`/`Struct`/`ListValue` nesting beyond that return
+      `kind: :malformed_json`.
 
   A secondary surface exposes the underlying term-in/term-out pipeline.
   `to_term/4` returns a JSON-compatible Elixir term (maps, lists, strings,
@@ -68,7 +72,7 @@ defmodule PB.JSON do
 
   alias PB
   alias PB.{DecodeError, ValueError}
-  alias PB.JSON.{Decoder, Encoder, Errors}
+  alias PB.JSON.{Decoder, Depth, Encoder, Errors}
   alias PB.Runtime.Errors, as: RuntimeErrors
   alias PB.Runtime.Frontend
 
@@ -331,16 +335,20 @@ defmodule PB.JSON do
   #   * map JSON `null` to Elixir `nil` (rather than OTP's default atom
   #     `:null`) so the term layer can treat null uniformly;
   #   * reject exact-duplicate object keys (OTP's default decoder silently
-  #     dedupes, masking ProtoJSON `FieldNameDuplicate` violations).
+  #     dedupes, masking ProtoJSON `FieldNameDuplicate` violations);
+  #   * reject JSON container nesting past PB's fixed decode-depth limit.
   defp parse_json(json, message_name) do
     decoders = %{
       null: nil,
+      array_start: &array_start/1,
+      array_push: &array_push/2,
+      array_finish: &array_finish/2,
       object_start: &object_start/1,
       object_push: &object_push/3,
       object_finish: &object_finish/2
     }
 
-    {decoded, :ok, ""} = :json.decode(json, :ok, decoders)
+    {decoded, _acc, ""} = :json.decode(json, {:json_root, 0}, decoders)
     {:ok, decoded}
   rescue
     exception ->
@@ -353,6 +361,16 @@ defmodule PB.JSON do
          reason: Exception.message(exception)
        }}
   catch
+    :throw, :max_decode_depth_exceeded ->
+      {:error,
+       %DecodeError{
+         operation: :json_decode,
+         kind: :malformed_json,
+         format: :json,
+         message_name: message_name,
+         reason: :max_decode_depth_exceeded
+       }}
+
     :throw, {:duplicate_key, key} ->
       {:error,
        %DecodeError{
@@ -374,19 +392,38 @@ defmodule PB.JSON do
        }}
   end
 
-  # The object accumulator is `{proplist, seen}` so duplicate-key detection is an
-  # O(1) MapSet membership test per key rather than List.keymember?'s O(n) scan —
-  # the latter makes decoding an n-key object (e.g. a large `map<string,V>`) O(n²).
-  # object_finish collapses it back to the map OTP's default decoder would produce.
-  defp object_start(_old_acc), do: {[], %{}}
+  # The object accumulator keeps `{depth, proplist, seen}` so duplicate-key
+  # detection is an O(1) map membership test per key rather than List.keymember?'s
+  # O(n) scan — the latter makes decoding an n-key object (e.g. a large
+  # `map<string,V>`) O(n²). object_finish collapses it back to the map OTP's
+  # default decoder would produce.
+  defp array_start(old_acc), do: {:json_array, parse_descend!(old_acc), []}
 
-  defp object_push(key, value, {proplist, seen}) do
+  defp array_push(value, {:json_array, depth, values}), do: {:json_array, depth, [value | values]}
+
+  defp array_finish({:json_array, _depth, values}, old_acc), do: {Enum.reverse(values), old_acc}
+
+  defp object_start(old_acc), do: {:json_object, parse_descend!(old_acc), [], %{}}
+
+  defp object_push(key, value, {:json_object, depth, proplist, seen}) do
     if Map.has_key?(seen, key) do
       throw({:duplicate_key, key})
     else
-      {[{key, value} | proplist], Map.put(seen, key, true)}
+      {:json_object, depth, [{key, value} | proplist], Map.put(seen, key, true)}
     end
   end
 
-  defp object_finish({proplist, _seen}, old_acc), do: {:maps.from_list(proplist), old_acc}
+  defp object_finish({:json_object, _depth, proplist, _seen}, old_acc),
+    do: {:maps.from_list(proplist), old_acc}
+
+  defp parse_descend!(acc) do
+    case Depth.descend(parse_depth(acc)) do
+      {:ok, depth} -> depth
+      :error -> throw(:max_decode_depth_exceeded)
+    end
+  end
+
+  defp parse_depth({:json_root, depth}), do: depth
+  defp parse_depth({:json_array, depth, _values}), do: depth
+  defp parse_depth({:json_object, depth, _proplist, _seen}), do: depth
 end

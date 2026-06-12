@@ -17,7 +17,7 @@ defmodule PB.JSON.Decoder do
   #   2. repeated-element filter: drop the element
   #   3. map-entry filter: drop the entry
 
-  alias PB.JSON.{Errors, Scalars, WKT}
+  alias PB.JSON.{Depth, Errors, Scalars, WKT}
   alias PB.Schema.Features
 
   @doc false
@@ -27,24 +27,34 @@ defmodule PB.JSON.Decoder do
     end)
   end
 
-  defp callbacks, do: %{encode_message: nil, decode_message: &decode_message/4}
+  defp callbacks(depth) do
+    %{
+      encode_message: nil,
+      decode_message: fn name, json, schema, opts ->
+        decode_message(name, json, schema, opts, Depth.descend!(depth))
+      end,
+      descend: &Depth.descend!/1
+    }
+  end
 
   # ── axis 1 ───────────────────────────────────────────────────────────
-  defp decode_message(name, json, schema, opts) do
+  defp decode_message(name, json, schema, opts), do: decode_message(name, json, schema, opts, 0)
+
+  defp decode_message(name, json, schema, opts, depth) do
     case WKT.lookup(name) do
       %{dec: _} = entry ->
-        WKT.decode(entry, json, schema, opts, callbacks())
+        WKT.decode(entry, json, schema, opts, callbacks(depth), depth)
 
       _ ->
         case schema.messages[name] do
           nil -> Errors.raise!(:unknown_message, name, details: %{type_name: name})
-          msg -> decode_regular(msg, json, schema, opts)
+          msg -> decode_regular(msg, json, schema, opts, depth)
         end
     end
   end
 
   # ── regular message ──────────────────────────────────────────────────
-  defp decode_regular(msg, json, schema, opts) when is_map(json) do
+  defp decode_regular(msg, json, schema, opts, depth) when is_map(json) do
     lookup = field_lookup(msg)
 
     {fields, _oneof_seen, _field_seen} =
@@ -72,7 +82,7 @@ defmodule PB.JSON.Decoder do
               )
             end
 
-            {acc, oneof_seen} = decode_one(schema, field, value, acc, oneof_seen, opts)
+            {acc, oneof_seen} = decode_one(schema, field, value, acc, oneof_seen, opts, depth)
             {acc, oneof_seen, MapSet.put(field_seen, field.name)}
         end
       end)
@@ -81,7 +91,7 @@ defmodule PB.JSON.Decoder do
     wrap_oneofs(fields, msg)
   end
 
-  defp decode_regular(_msg, json, _schema, _opts) do
+  defp decode_regular(_msg, json, _schema, _opts, _depth) do
     Errors.raise!(:malformed_json, "expected JSON object",
       details: %{expected: :object, got: json}
     )
@@ -92,7 +102,7 @@ defmodule PB.JSON.Decoder do
   # to that type's null sentinel; for any other type, and for repeated
   # /map fields whose entire JSON value is null, the field is left
   # absent.
-  defp decode_one(_schema, field, nil, acc, seen, _opts) do
+  defp decode_one(_schema, field, nil, acc, seen, _opts, _depth) do
     cond do
       Features.repeated?(field) or Features.map?(field) ->
         {acc, seen}
@@ -107,8 +117,8 @@ defmodule PB.JSON.Decoder do
     end
   end
 
-  defp decode_one(schema, field, value, acc, seen, opts) do
-    case decode_field(field, value, schema, opts) do
+  defp decode_one(schema, field, value, acc, seen, opts, depth) do
+    case decode_field(field, value, schema, opts, depth) do
       :skip ->
         # Singular unknown enum with `ignore_unknown` -- leave the
         # field absent and don't claim the oneof slot.
@@ -122,10 +132,10 @@ defmodule PB.JSON.Decoder do
 
   # ── axis 2 ───────────────────────────────────────────────────────────
   # Returns a value, or `:skip` (only for singular unknown enum).
-  defp decode_field(field, value, schema, opts) do
+  defp decode_field(field, value, schema, opts, depth) do
     cond do
       map_field?(schema, field) ->
-        decode_map(field, value, schema, opts)
+        decode_map(field, value, schema, opts, depth)
 
       Features.repeated?(field) ->
         unless is_list(value) do
@@ -135,25 +145,25 @@ defmodule PB.JSON.Decoder do
         end
 
         Enum.flat_map(value, fn v ->
-          case decode_element(field, v, schema, opts) do
+          case decode_element(field, v, schema, opts, depth) do
             :skip -> []
             decoded -> [decoded]
           end
         end)
 
       true ->
-        decode_element(field, value, schema, opts)
+        decode_element(field, value, schema, opts, depth)
     end
   end
 
-  defp decode_map(field, value, schema, opts) when is_map(value) do
+  defp decode_map(field, value, schema, opts, depth) when is_map(value) do
     ref = schema.messages[field.type_name]
     key_field = ref.fields_by_name[:key]
     value_field = ref.fields_by_name[:value]
 
     value
     |> Enum.flat_map(fn {k, v} ->
-      case decode_element(value_field, v, schema, opts) do
+      case decode_element(value_field, v, schema, opts, depth) do
         :skip -> []
         decoded -> [{Scalars.parse_map_key(key_field, Scalars.stringify_key(k)), decoded}]
       end
@@ -161,7 +171,7 @@ defmodule PB.JSON.Decoder do
     |> Map.new()
   end
 
-  defp decode_map(_field, value, _schema, _opts) do
+  defp decode_map(_field, value, _schema, _opts, _depth) do
     Errors.raise!(:invalid_value, "expected JSON object for map",
       details: %{expected: :object, got: value}
     )
@@ -170,28 +180,28 @@ defmodule PB.JSON.Decoder do
   # Used for singular fields and for repeated/map elements alike. JSON
   # null inside a repeated/map element binds a WKT null sentinel or
   # raises (same rule as today).
-  defp decode_element(field, nil, _schema, _opts) do
+  defp decode_element(field, nil, _schema, _opts, _depth) do
     case WKT.null_binding(Map.get(field, :type_name)) do
       {:bind, decoded} -> decoded
       nil -> Errors.raise!(:malformed_json, "null is not allowed inside arrays or map values")
     end
   end
 
-  defp decode_element(field, value, schema, opts) do
+  defp decode_element(field, value, schema, opts, depth) do
     case field.type do
       :TYPE_ENUM -> Scalars.decode_enum(schema, field, value, opts)
-      _ -> decode_scalar(field, value, schema, opts)
+      _ -> decode_scalar(field, value, schema, opts, depth)
     end
   end
 
   # ── axis 3 ───────────────────────────────────────────────────────────
-  defp decode_scalar(field, value, schema, opts) do
+  defp decode_scalar(field, value, schema, opts, depth) do
     case field.type do
       :TYPE_MESSAGE ->
         # Note: WKT decoders accept non-object JSON (Value, ListValue,
         # wrappers, FieldMask, Timestamp, Duration). Only regular
         # messages need the is_map check, which lives in decode_regular.
-        decode_message(field.type_name, value, schema, opts)
+        decode_message(field.type_name, value, schema, opts, Depth.descend!(depth))
 
       :TYPE_STRING ->
         unless is_binary(value) do

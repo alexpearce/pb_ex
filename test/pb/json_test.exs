@@ -800,6 +800,73 @@ defmodule PB.JSONTest do
              )
   end
 
+  describe "decode depth guard" do
+    setup do
+      %{schema: PB.TestSupport.TestSchema.schema()}
+    end
+
+    @recursive_message :"protobuf_test_messages.proto3.TestAllTypesProto3"
+    @value :"google.protobuf.Value"
+    @struct :"google.protobuf.Struct"
+    @list_value :"google.protobuf.ListValue"
+
+    test "decode/4 rejects JSON container nesting past the fixed limit", %{schema: schema} do
+      assert {:ok, _} =
+               JSON.decode(nested_array_json(100), schema, @value)
+
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.decode(nested_array_json(101), schema, @value)
+    end
+
+    test "from_term/4 rejects recursive messages past the fixed limit", %{schema: schema} do
+      assert {:ok, _} =
+               JSON.from_term(nested_recursive_message(100), schema, @recursive_message)
+
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.from_term(nested_recursive_message(101), schema, @recursive_message)
+    end
+
+    test "from_term/4 rejects deeply nested Value objects and arrays", %{schema: schema} do
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.from_term(nested_object(101), schema, @value)
+
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.from_term(nested_array(101), schema, @value)
+    end
+
+    test "from_term/4 rejects deeply nested Struct and ListValue payloads", %{schema: schema} do
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.from_term(nested_object(102), schema, @struct)
+
+      assert {:error,
+              %PB.DecodeError{
+                operation: :json_decode,
+                kind: :malformed_json,
+                reason: :max_decode_depth_exceeded
+              }} = JSON.from_term(nested_array(102), schema, @list_value)
+    end
+  end
+
   # ── emit_defaults ─────────────────────────────────────────────────
 
   describe "emit_defaults" do
@@ -1997,5 +2064,21 @@ defmodule PB.JSONTest do
       assert {:ok, ^json} = JSON.to_term(any_data, schema, @any)
       assert {:ok, ^any_data} = JSON.from_term(json, schema, @any)
     end
+  end
+
+  defp nested_recursive_message(depth) do
+    Enum.reduce(1..depth, %{}, fn _, acc -> %{"recursiveMessage" => acc} end)
+  end
+
+  defp nested_array(depth) do
+    Enum.reduce(1..depth, nil, fn _, acc -> [acc] end)
+  end
+
+  defp nested_array_json(depth) do
+    String.duplicate("[", depth) <> "null" <> String.duplicate("]", depth)
+  end
+
+  defp nested_object(depth) do
+    Enum.reduce(1..depth, nil, fn _, acc -> %{"value" => acc} end)
   end
 end

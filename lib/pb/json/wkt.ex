@@ -114,15 +114,15 @@ defmodule PB.JSON.WKT do
     end
   end
 
-  def decode(entry, json, schema, opts, callbacks) do
+  def decode(entry, json, schema, opts, callbacks, depth) do
     case entry.dec do
       {:wrapper_decode, type} -> decode_wrapper(type, json)
       :field_mask -> decode_field_mask(json)
       :timestamp -> decode_timestamp(json)
       :duration -> decode_duration(json)
-      :value -> decode_value(json)
-      :struct -> decode_struct(json)
-      :list_value -> decode_list_value(json)
+      :value -> decode_value(json, depth, callbacks)
+      :struct -> decode_struct(json, depth, callbacks)
+      :list_value -> decode_list_value(json, depth, callbacks)
       :any -> decode_any(json, schema, opts, callbacks)
     end
   end
@@ -532,13 +532,19 @@ defmodule PB.JSON.WKT do
     Errors.raise!(:invalid_value, "expected number", details: %{expected: :number, got: v})
   end
 
-  defp decode_value(nil), do: %{kind: {:null_value, :NULL_VALUE}}
-  defp decode_value(true), do: %{kind: {:bool_value, true}}
-  defp decode_value(false), do: %{kind: {:bool_value, false}}
-  defp decode_value(n) when is_number(n), do: %{kind: {:number_value, n}}
-  defp decode_value(s) when is_binary(s), do: %{kind: {:string_value, s}}
-  defp decode_value(list) when is_list(list), do: %{kind: {:list_value, decode_list_value(list)}}
-  defp decode_value(map) when is_map(map), do: %{kind: {:struct_value, decode_struct(map)}}
+  defp decode_value(nil, _depth, _callbacks), do: %{kind: {:null_value, :NULL_VALUE}}
+  defp decode_value(true, _depth, _callbacks), do: %{kind: {:bool_value, true}}
+  defp decode_value(false, _depth, _callbacks), do: %{kind: {:bool_value, false}}
+  defp decode_value(n, _depth, _callbacks) when is_number(n), do: %{kind: {:number_value, n}}
+  defp decode_value(s, _depth, _callbacks) when is_binary(s), do: %{kind: {:string_value, s}}
+
+  defp decode_value(list, depth, callbacks) when is_list(list) do
+    %{kind: {:list_value, decode_list_value(list, callbacks.descend.(depth), callbacks)}}
+  end
+
+  defp decode_value(map, depth, callbacks) when is_map(map) do
+    %{kind: {:struct_value, decode_struct(map, callbacks.descend.(depth), callbacks)}}
+  end
 
   # `google.protobuf.Struct` is `map<string, Value>` serialised as a JSON
   # object. Empty Struct encodes to `{}`.
@@ -570,16 +576,16 @@ defmodule PB.JSON.WKT do
     )
   end
 
-  defp decode_struct(json) when is_map(json) do
+  defp decode_struct(json, depth, callbacks) when is_map(json) do
     fields =
       Map.new(json, fn {k, v} ->
-        {Scalars.stringify_key(k), decode_value(v)}
+        {Scalars.stringify_key(k), decode_value(v, depth, callbacks)}
       end)
 
     %{fields: fields}
   end
 
-  defp decode_struct(value) do
+  defp decode_struct(value, _depth, _callbacks) do
     Errors.raise!(:invalid_value, "expected JSON object for Struct",
       details: %{expected: :object, got: value}
     )
@@ -606,11 +612,11 @@ defmodule PB.JSON.WKT do
     )
   end
 
-  defp decode_list_value(list) when is_list(list) do
-    %{values: Enum.map(list, &decode_value/1)}
+  defp decode_list_value(list, depth, callbacks) when is_list(list) do
+    %{values: Enum.map(list, &decode_value(&1, depth, callbacks))}
   end
 
-  defp decode_list_value(value) do
+  defp decode_list_value(value, _depth, _callbacks) do
     Errors.raise!(:invalid_value, "expected JSON array for ListValue",
       details: %{expected: :array, got: value}
     )
