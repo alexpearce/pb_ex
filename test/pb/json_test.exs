@@ -385,6 +385,22 @@ defmodule PB.JSONTest do
       assert {:ok, %{f_double: 3.5}} = JSON.from_term(json, ss, :"s.Scalars")
     end
 
+    test "negative zero floats are emitted like the wire codec", %{ss: ss} do
+      data = %{f_double: -0.0, f_float: -0.0}
+
+      assert {:ok, wire} = PB.encode(data, ss, :"s.Scalars")
+      assert byte_size(wire) > 0
+      assert {:ok, decoded} = PB.decode(wire, ss, :"s.Scalars")
+      assert decoded.f_double === -0.0
+      assert decoded.f_float === -0.0
+
+      assert {:ok, json} = JSON.to_term(data, ss, :"s.Scalars")
+      assert Map.has_key?(json, "fDouble")
+      assert Map.has_key?(json, "fFloat")
+      assert json["fDouble"] === -0.0
+      assert json["fFloat"] === -0.0
+    end
+
     test "double NaN/Infinity/-Infinity as strings", %{ss: ss} do
       {:ok, j1} = JSON.to_term(%{f_double: :nan}, ss, :"s.Scalars")
       {:ok, j2} = JSON.to_term(%{f_double: :infinity}, ss, :"s.Scalars")

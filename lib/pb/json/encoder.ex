@@ -13,6 +13,7 @@ defmodule PB.JSON.Encoder do
   # the WKT table.
 
   alias PB.JSON.{Errors, Scalars, WKT}
+  alias PB.Runtime.Scalar
   alias PB.Schema.Features
 
   @null_value :"google.protobuf.NullValue"
@@ -91,13 +92,13 @@ defmodule PB.JSON.Encoder do
 
   defp should_emit?(_schema, _msg, _field, nil, _opts), do: false
 
-  defp should_emit?(schema, _msg, field, value, opts) do
+  defp should_emit?(_schema, _msg, field, value, opts) do
     cond do
       opts[:emit_defaults] -> true
       has_presence?(field) -> true
       Features.repeated?(field) and value in [[], %{}] -> false
       Features.repeated?(field) -> true
-      is_default_scalar?(schema, field, value) -> false
+      Scalar.default_value?(field, value) -> false
       true -> true
     end
   end
@@ -203,26 +204,6 @@ defmodule PB.JSON.Encoder do
 
       true ->
         0
-    end
-  end
-
-  defp is_default_scalar?(schema, field, value) do
-    case field.type do
-      :TYPE_BOOL -> value == false
-      :TYPE_STRING -> value == ""
-      :TYPE_BYTES -> value == ""
-      :TYPE_DOUBLE -> value == 0 or value === 0.0
-      :TYPE_FLOAT -> value == 0 or value === 0.0
-      :TYPE_ENUM -> value == 0 or value == zero_enum_atom(schema, field)
-      :TYPE_MESSAGE -> false
-      _ -> value == 0
-    end
-  end
-
-  defp zero_enum_atom(schema, field) do
-    case schema.enums[field.type_name] do
-      nil -> nil
-      enum -> Map.get(enum.by_number, 0)
     end
   end
 
