@@ -249,6 +249,10 @@ defmodule PB.Validate.CompilerTest do
            }
 
     assert value_rule.id == "string.pattern"
+    assert [{matches_id, %Regex{} = regex}] = Map.to_list(value_rule.regexes)
+    assert {:call, %{name: "matches"}} = Checked.op(value_rule.checked, matches_id)
+    assert Regex.match?(regex, "abc")
+    refute Regex.match?(regex, "ABC")
 
     assert value_rule.rule_path == %{
              elements: [

@@ -25,6 +25,7 @@ defmodule PB.CEL.Evaluator do
       :schema,
       :message_schema,
       :message_runtime,
+      regexes: %{},
       vars: %{},
       var_cache: %{},
       scopes: []
@@ -40,6 +41,7 @@ defmodule PB.CEL.Evaluator do
     state = %State{
       checked: checked,
       vars: normalize_vars(vars),
+      regexes: Keyword.get(opts, :regexes, %{}),
       schema: eval_schema(checked, opts, message_schema),
       message_schema: message_schema,
       message_runtime: eval_message_runtime(opts)
@@ -441,6 +443,31 @@ defmodule PB.CEL.Evaluator do
     end
   end
 
+  defp apply_registered_call(
+         %{id: id} = expr,
+         %{eval: {:mfa, {PB.CEL.Runtime.Strings, :matches}}} = op,
+         target,
+         args,
+         state
+       ) do
+    values = call_values(target, args)
+
+    case Map.fetch(state.regexes, id) do
+      {:ok, %Regex{} = regex} ->
+        dispatch_precompiled_matches(expr, values, state, regex)
+
+      :error ->
+        dispatch_mfa_call(
+          expr,
+          PB.CEL.Runtime.Strings,
+          :matches,
+          values,
+          state,
+          op[:eval_context] || []
+        )
+    end
+  end
+
   defp apply_registered_call(expr, %{eval: {:mfa, {mod, fun}}} = op, target, args, state) do
     dispatch_mfa_call(expr, mod, fun, call_values(target, args), state, op[:eval_context] || [])
   end
@@ -456,6 +483,13 @@ defmodule PB.CEL.Evaluator do
     args = [values | Enum.map(eval_context, &eval_context_value(&1, state))]
 
     case apply(mod, fun, args) do
+      {:ok, value} -> {:ok, value, state}
+      {:error, reason} -> error(expr, reason)
+    end
+  end
+
+  defp dispatch_precompiled_matches(expr, values, state, regex) do
+    case PB.CEL.Runtime.Strings.matches(values, regex) do
       {:ok, value} -> {:ok, value, state}
       {:error, reason} -> error(expr, reason)
     end

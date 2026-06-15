@@ -58,6 +58,7 @@ defmodule PB.Validate.Schema do
             source: String.t(),
             checked: Checked.t(),
             vars: %{String.t() => term()},
+            regexes: %{Checked.expr_id() => Regex.t()},
             rule_path: field_path() | nil,
             proto_rule_path: field_path() | nil
           }
@@ -70,6 +71,7 @@ defmodule PB.Validate.Schema do
       :source,
       :checked,
       vars: %{},
+      regexes: %{},
       rule_path: nil,
       proto_rule_path: nil
     ]

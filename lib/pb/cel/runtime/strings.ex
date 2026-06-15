@@ -49,6 +49,13 @@ defmodule PB.CEL.Runtime.Strings do
 
   def matches(_values), do: no_such_overload()
 
+  @spec matches([Value.t()], Regex.t()) :: result
+  def matches([{:string, string}, {:string, _pattern}], %Regex{} = regex) do
+    {:ok, Value.bool(Regex.match?(regex, string))}
+  end
+
+  def matches(_values, %Regex{}), do: no_such_overload()
+
   @spec char_at([Value.t()]) :: result
   def char_at([{:string, string}, {:int, index}]) do
     codepoints = String.codepoints(string)

@@ -581,7 +581,8 @@ defmodule PB.Validate do
     case Evaluator.eval(op.checked, vars,
            schema: eval_schema,
            message_schema: CELSchema,
-           message_runtime: CELMessage
+           message_runtime: CELMessage,
+           regexes: Map.get(op, :regexes, %{})
          ) do
       {:ok, {:bool, true}} ->
         []

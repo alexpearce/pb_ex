@@ -2,6 +2,7 @@ defmodule PB.CEL.EvaluatorTest do
   use ExUnit.Case, async: true
 
   alias PB.CEL
+  alias PB.CEL.Checked
   alias PB.CEL.Error
   alias PB.CEL.Type
   alias PB.CEL.Value
@@ -653,6 +654,21 @@ defmodule PB.CEL.EvaluatorTest do
 
     assert {:error, %Error{phase: :eval, message: "no such overload"}} =
              CEL.eval(~S|[dyn('x'), dyn(1)].join()|)
+  end
+
+  test "uses supplied precompiled regexes for matches calls" do
+    checked =
+      CEL.check!(~S|value.matches(pattern)|, env(vars: %{value: :string, pattern: :string}))
+
+    matches_id = checked.expr.id
+    assert {:call, %{name: "matches"}} = Checked.op(checked, matches_id)
+
+    vars = %{"value" => "aaa", "pattern" => "^z+$"}
+
+    assert {:ok, {:bool, false}} = CEL.Evaluator.eval(checked, vars)
+
+    assert {:ok, {:bool, true}} =
+             CEL.Evaluator.eval(checked, vars, regexes: %{matches_id => ~r/^a+$/})
   end
 
   test "evaluates string format extension" do
