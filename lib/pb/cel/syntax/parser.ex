@@ -14,6 +14,9 @@ defmodule PB.CEL.Syntax.Parser do
   @prec_multiplication 6
   @prec_unary 7
 
+  @max_source_bytes 100_000
+  @max_recursion_depth 250
+
   @binary_ops %{
     "||" => {@prec_or, "_||_"},
     "&&" => {@prec_and, "_&&_"},
@@ -35,12 +38,13 @@ defmodule PB.CEL.Syntax.Parser do
 
   defmodule State do
     @moduledoc false
-    defstruct [:tokens, :builder, :location, index: 0]
+    defstruct [:tokens, :builder, :location, index: 0, depth: 0]
   end
 
   @spec parse(String.t(), keyword) :: {:ok, Proto.parsed_expr()} | {:error, Error.t()}
   def parse(source, opts \\ []) when is_binary(source) and is_list(opts) do
-    with {:ok, tokens} <- Tokenizer.tokenize(source, opts) do
+    with :ok <- check_source_size(source, opts),
+         {:ok, tokens} <- Tokenizer.tokenize(source, opts) do
       state = %State{
         tokens: tokens,
         builder: Builder.new(source, opts),
@@ -55,8 +59,10 @@ defmodule PB.CEL.Syntax.Parser do
   end
 
   defp parse_expr(%State{} = state, min_prec) do
-    with {:ok, left, state} <- parse_prefix(state) do
-      parse_infix(state, left, min_prec)
+    with {:ok, state} <- descend(state),
+         {:ok, left, state} <- parse_prefix(state),
+         {:ok, expr, state} <- parse_infix(state, left, min_prec) do
+      {:ok, expr, ascend(state)}
     end
   end
 
@@ -553,6 +559,33 @@ defmodule PB.CEL.Syntax.Parser do
     optional_indices = Enum.reverse(optional_indices)
     build(state, &Builder.list(&1, pos, elements, optional_indices), next_state)
   end
+
+  defp check_source_size(source, _opts) when byte_size(source) <= @max_source_bytes do
+    :ok
+  end
+
+  defp check_source_size(_source, opts) do
+    {:error,
+     Error.exception(
+       phase: :parse,
+       message: "CEL source exceeds maximum size of #{@max_source_bytes} bytes",
+       offset: 0,
+       location: Keyword.get(opts, :location)
+     )}
+  end
+
+  defp descend(%State{depth: depth} = state) when depth < @max_recursion_depth do
+    {:ok, %State{state | depth: depth + 1}}
+  end
+
+  defp descend(%State{} = state) do
+    error(
+      current(state),
+      "CEL expression exceeds maximum parse recursion depth of #{@max_recursion_depth}"
+    )
+  end
+
+  defp ascend(%State{depth: depth} = state), do: %State{state | depth: depth - 1}
 
   defp current(%State{} = state), do: Enum.at(state.tokens, state.index)
   defp peek(%State{} = state, offset), do: Enum.at(state.tokens, state.index + offset)

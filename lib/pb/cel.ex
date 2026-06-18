@@ -130,6 +130,9 @@ defmodule PB.CEL do
 
   The second argument must be a `PB.CEL.Env`.
 
+  Passing a pre-parsed expression skips parser resource limits and assumes the
+  AST came from `parse/2` or another trusted producer.
+
   Variable declaration values may be checker-native types, generated
   `cel.expr.Type` maps (see `PB.CEL.Type`), or shorthand atoms/tuples such as
   `:int`, `{:list, :string}`, or `{:map, :string, :dyn}`.

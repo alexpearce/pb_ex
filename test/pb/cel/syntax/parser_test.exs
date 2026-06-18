@@ -185,6 +185,29 @@ defmodule PB.CEL.Syntax.ParserTest do
              CEL.parse("in")
   end
 
+  test "rejects sources above the parser byte-size cap before tokenization" do
+    source = String.duplicate("@", 100_001)
+
+    assert {:error,
+            %Error{
+              phase: :parse,
+              message: "CEL source exceeds maximum size of 100000 bytes",
+              offset: 0,
+              location: "too-large.cel"
+            }} = CEL.parse(source, location: "too-large.cel")
+  end
+
+  test "rejects expressions above the parser recursion-depth cap" do
+    assert CEL.parse!(String.duplicate("!", 32) <> "true")
+
+    assert {:error,
+            %Error{
+              phase: :parse,
+              message: "CEL expression exceeds maximum parse recursion depth of 250",
+              offset: 250
+            }} = CEL.parse(String.duplicate("!", 300) <> "true")
+  end
+
   defp call_args(%{expr_kind: {:call_expr, %{function: function, args: args}}}, function),
     do: args
 
