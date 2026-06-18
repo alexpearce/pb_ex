@@ -958,6 +958,24 @@ defmodule PB.JSONTest do
                 field: [
                   %{name: :id, number: 1, type: :TYPE_INT32, label: :LABEL_REQUIRED}
                 ]
+              },
+              %{
+                name: :MsgWithRequiredChild,
+                field: [
+                  %{
+                    name: :child,
+                    number: 1,
+                    type: :TYPE_MESSAGE,
+                    label: :LABEL_REQUIRED,
+                    type_name: :"reqj.Child"
+                  }
+                ]
+              },
+              %{
+                name: :Child,
+                field: [
+                  %{name: :id, number: 1, type: :TYPE_INT32, label: :LABEL_OPTIONAL}
+                ]
               }
             ],
             enum_type: []
@@ -979,6 +997,26 @@ defmodule PB.JSONTest do
 
     assert {:ok, %{"id" => 0}} = JSON.to_term(%{id: 0}, schema, :"reqj.Msg")
     assert {:ok, %{id: 0}} = JSON.from_term(%{"id" => 0}, schema, :"reqj.Msg")
+
+    assert {:error,
+            %PB.ValueError{
+              operation: :json_encode,
+              kind: :missing_required,
+              path: [:child]
+            }} = JSON.to_term(%{child: nil}, schema, :"reqj.MsgWithRequiredChild")
+
+    assert {:error,
+            %PB.ValueError{
+              operation: :json_decode,
+              kind: :missing_required,
+              path: [:child]
+            }} = JSON.from_term(%{"child" => nil}, schema, :"reqj.MsgWithRequiredChild")
+
+    assert {:ok, %{"child" => %{}}} =
+             JSON.to_term(%{child: %{}}, schema, :"reqj.MsgWithRequiredChild")
+
+    assert {:ok, %{child: %{}}} =
+             JSON.from_term(%{"child" => %{}}, schema, :"reqj.MsgWithRequiredChild")
   end
 
   # ── Error cases at top level ──────────────────────────────────────

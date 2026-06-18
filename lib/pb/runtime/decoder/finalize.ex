@@ -18,6 +18,7 @@ defmodule PB.Runtime.Decoder.Finalize do
 
   alias PB.Runtime.Codec
   alias PB.Runtime.MessageView
+  alias PB.Runtime.RequiredFields
   alias PB.Runtime.Scalar
   alias PB.Runtime.Schema, as: RuntimeSchema
   alias PB.Schema.Features
@@ -263,13 +264,10 @@ defmodule PB.Runtime.Decoder.Finalize do
   defp maybe_apply_defaults(fields, _msg, _schema, _opts, _path), do: {:ok, fields}
 
   defp ensure_required(fields, msg, path) do
-    Enum.reduce_while(msg.required_fields, :ok, fn {name, _type}, :ok ->
-      if not Map.has_key?(fields, name) do
-        {:halt, {:error, {:missing_required, path ++ [name]}}}
-      else
-        {:cont, :ok}
-      end
-    end)
+    case RequiredFields.missing_path(msg.required_fields, fields, path, nil_message: :present) do
+      nil -> :ok
+      missing -> {:error, {:missing_required, missing}}
+    end
   end
 
   defp apply_defaults(fields, msg, schema, path) do

@@ -13,6 +13,7 @@ defmodule PB.JSON.Encoder do
   # the WKT table.
 
   alias PB.JSON.{Errors, Scalars, WKT}
+  alias PB.Runtime.RequiredFields
   alias PB.Runtime.Scalar
   alias PB.Schema.Features
 
@@ -221,18 +222,11 @@ defmodule PB.JSON.Encoder do
   defp has_presence?(field), do: Features.has_presence?(field)
 
   defp check_required!(msg, data) do
-    Enum.each(msg.fields_by_name, fn {name, field} ->
-      if Features.required?(field) and missing_required?(data, name, field) do
-        Errors.raise!(:missing_required, nil, path: [name])
-      end
-    end)
+    case RequiredFields.missing_path(msg.required_fields, data) do
+      nil -> :ok
+      path -> Errors.raise!(:missing_required, nil, path: path)
+    end
   end
-
-  defp missing_required?(fields, name, %{type: :TYPE_MESSAGE}) do
-    not Map.has_key?(fields, name) or Map.get(fields, name) == nil
-  end
-
-  defp missing_required?(fields, name, _field), do: not Map.has_key?(fields, name)
 
   defp json_key(field, opts) do
     if opts[:use_proto_names] do

@@ -18,6 +18,7 @@ defmodule PB.JSON.Decoder do
   #   3. map-entry filter: drop the entry
 
   alias PB.JSON.{Depth, Errors, Scalars, WKT}
+  alias PB.Runtime.RequiredFields
   alias PB.Schema.Features
 
   @doc false
@@ -289,18 +290,11 @@ defmodule PB.JSON.Decoder do
   end
 
   defp check_required!(msg, fields) do
-    Enum.each(msg.fields_by_name, fn {name, field} ->
-      if Features.required?(field) and missing_required?(fields, name, field) do
-        Errors.raise!(:missing_required, nil, path: [name])
-      end
-    end)
+    case RequiredFields.missing_path(msg.required_fields, fields) do
+      nil -> :ok
+      path -> Errors.raise!(:missing_required, nil, path: path)
+    end
   end
-
-  defp missing_required?(fields, name, %{type: :TYPE_MESSAGE}) do
-    not Map.has_key?(fields, name) or Map.get(fields, name) == nil
-  end
-
-  defp missing_required?(fields, name, _field), do: not Map.has_key?(fields, name)
 
   defp field_lookup(msg) do
     Enum.reduce(msg.fields_by_name, %{}, fn {fname, field}, acc ->

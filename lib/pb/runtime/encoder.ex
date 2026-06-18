@@ -3,6 +3,7 @@ defmodule PB.Runtime.Encoder do
 
   alias PB.Runtime.Errors
   alias PB.Runtime.MessageView
+  alias PB.Runtime.RequiredFields
   alias PB.Runtime.Scalar
   alias PB.Runtime.Schema, as: RuntimeSchema
   alias PB.Schema.Features
@@ -81,18 +82,10 @@ defmodule PB.Runtime.Encoder do
   end
 
   defp validate_required_fields(msg, data, path) do
-    Enum.reduce_while(msg.required_fields, :ok, fn {name, type}, :ok ->
-      cond do
-        not Map.has_key?(data, name) ->
-          {:halt, {:error, {:missing_required, path ++ [name]}}}
-
-        type == :TYPE_MESSAGE and Map.get(data, name) == nil ->
-          {:halt, {:error, {:missing_required, path ++ [name]}}}
-
-        true ->
-          {:cont, :ok}
-      end
-    end)
+    case RequiredFields.missing_path(msg.required_fields, data, path) do
+      nil -> :ok
+      missing -> {:error, {:missing_required, missing}}
+    end
   end
 
   defp invalid_value(path, expected, value) do
